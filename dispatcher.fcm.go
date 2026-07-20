@@ -170,7 +170,10 @@ func (d *fcmDispatcher) Send(ctx context.Context, tokens []DeviceToken, msg Mess
 
 	d.logger.Infof("grnoti/fcm: dispatching to %d tokens across %d platform groups", len(tokens), len(byPlatform))
 
-	var result DispatchResult
+	result := DispatchResult{
+		SuccessByPlatform: make(map[Platform]int, len(byPlatform)),
+		FailureByPlatform: make(map[Platform]int, len(byPlatform)),
+	}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for platform, platformTokens := range byPlatform {
@@ -184,6 +187,8 @@ func (d *fcmDispatcher) Send(ctx context.Context, tokens []DeviceToken, msg Mess
 			result.InvalidTokens = append(result.InvalidTokens, r.InvalidTokens...)
 			result.RetryableErrors += r.RetryableErrors
 			result.Errors = append(result.Errors, r.Errors...)
+			result.SuccessByPlatform[platform] += r.SuccessCount
+			result.FailureByPlatform[platform] += r.FailureCount
 			mu.Unlock()
 		}(platform, platformTokens)
 	}

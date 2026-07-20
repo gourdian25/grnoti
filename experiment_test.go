@@ -9,7 +9,7 @@ import (
 )
 
 func TestDeterministicExperimentEngine_AssignVariant_Deterministic(t *testing.T) {
-	engine := NewDeterministicExperimentEngine(nil, nil)
+	engine := NewDeterministicExperimentEngine(nil, nil, nil)
 	experiment := &Experiment{
 		ID: "exp-1",
 		Variants: []ExperimentVariant{
@@ -35,7 +35,7 @@ func TestDeterministicExperimentEngine_AssignVariant_Deterministic(t *testing.T)
 }
 
 func TestDeterministicExperimentEngine_AssignVariant_NoVariants(t *testing.T) {
-	engine := NewDeterministicExperimentEngine(nil, nil)
+	engine := NewDeterministicExperimentEngine(nil, nil, nil)
 	_, err := engine.AssignVariant(context.Background(), "user-1", &Experiment{ID: "empty"})
 	if err != ErrExperimentHasNoVariants {
 		t.Fatalf("AssignVariant(no variants) error = %v, want ErrExperimentHasNoVariants", err)
@@ -43,7 +43,7 @@ func TestDeterministicExperimentEngine_AssignVariant_NoVariants(t *testing.T) {
 }
 
 func TestDeterministicExperimentEngine_GetVariant_BeforeAssignment(t *testing.T) {
-	engine := NewDeterministicExperimentEngine(nil, nil)
+	engine := NewDeterministicExperimentEngine(nil, nil, nil)
 	v, err := engine.GetVariant(context.Background(), "user-1", "never-assigned")
 	if err != nil {
 		t.Fatalf("GetVariant: %v", err)
@@ -54,7 +54,7 @@ func TestDeterministicExperimentEngine_GetVariant_BeforeAssignment(t *testing.T)
 }
 
 func TestDeterministicExperimentEngine_GetVariant_AfterAssignment(t *testing.T) {
-	engine := NewDeterministicExperimentEngine(nil, nil)
+	engine := NewDeterministicExperimentEngine(nil, nil, nil)
 	experiment := &Experiment{ID: "exp-1", Variants: []ExperimentVariant{{ID: "only", Weight: 1}}}
 
 	assigned, err := engine.AssignVariant(context.Background(), "user-1", experiment)
@@ -78,7 +78,7 @@ func TestDeterministicExperimentEngine_GetVariant_AfterAssignment(t *testing.T) 
 // -race. It must both not race and converge on one consistent assignment
 // per user.
 func TestDeterministicExperimentEngine_ConcurrentAssignVariant(t *testing.T) {
-	engine := NewDeterministicExperimentEngine(nil, nil)
+	engine := NewDeterministicExperimentEngine(nil, nil, nil)
 	experiment := &Experiment{
 		ID: "exp-stress",
 		Variants: []ExperimentVariant{
@@ -131,7 +131,7 @@ func TestDeterministicExperimentEngine_ConcurrentAssignVariant(t *testing.T) {
 }
 
 func TestDeterministicExperimentEngine_TrackImpression_NoPublisher(t *testing.T) {
-	engine := NewDeterministicExperimentEngine(nil, nil)
+	engine := NewDeterministicExperimentEngine(nil, nil, nil)
 	if err := engine.TrackImpression(context.Background(), "user-1", "exp-1", "control"); err != nil {
 		t.Fatalf("TrackImpression with no publisher: %v", err)
 	}
@@ -154,7 +154,7 @@ func (s *stubAnalyticsPublisher) Close() error { return nil }
 
 func TestDeterministicExperimentEngine_TrackImpression_WithPublisher(t *testing.T) {
 	pub := &stubAnalyticsPublisher{}
-	engine := NewDeterministicExperimentEngine(pub, nil)
+	engine := NewDeterministicExperimentEngine(pub, nil, nil)
 
 	if err := engine.TrackImpression(context.Background(), "user-1", "exp-1", "control"); err != nil {
 		t.Fatalf("TrackImpression: %v", err)
@@ -164,5 +164,41 @@ func TestDeterministicExperimentEngine_TrackImpression_WithPublisher(t *testing.
 	}
 	if pub.impressions != 1 || pub.conversions != 1 {
 		t.Fatalf("publisher counts = (%d, %d), want (1, 1)", pub.impressions, pub.conversions)
+	}
+}
+
+func TestDeterministicExperimentEngine_AssignVariant_PublishesOnceOnNewAssignment(t *testing.T) {
+	bus := &stubBus{}
+	engine := NewDeterministicExperimentEngine(nil, bus, nil)
+	experiment := &Experiment{ID: "exp-1", Variants: []ExperimentVariant{{ID: "only", Weight: 1}}}
+
+	assigned, err := engine.AssignVariant(context.Background(), "user-1", experiment)
+	if err != nil {
+		t.Fatalf("AssignVariant: %v", err)
+	}
+
+	// A repeat AssignVariant for the same (user, experiment) must NOT
+	// publish again — only the genuinely new assignment does.
+	for i := 0; i < 3; i++ {
+		if _, err := engine.AssignVariant(context.Background(), "user-1", experiment); err != nil {
+			t.Fatalf("AssignVariant (repeat %d): %v", i, err)
+		}
+	}
+
+	events := bus.publishedEvents()
+	if len(events) != 1 {
+		t.Fatalf("Publish call count = %d, want exactly 1 (only the first, new assignment)", len(events))
+	}
+	payload, ok := events[0].Payload.(ExperimentAssignedPayload)
+	if !ok || payload.UserID != "user-1" || payload.ExperimentID != "exp-1" || payload.VariantID != assigned.ID {
+		t.Fatalf("Payload = %+v (ok=%v), want UserID=user-1 ExperimentID=exp-1 VariantID=%s", payload, ok, assigned.ID)
+	}
+}
+
+func TestDeterministicExperimentEngine_AssignVariant_NilBusIsNoOp(t *testing.T) {
+	engine := NewDeterministicExperimentEngine(nil, nil, nil)
+	experiment := &Experiment{ID: "exp-1", Variants: []ExperimentVariant{{ID: "only", Weight: 1}}}
+	if _, err := engine.AssignVariant(context.Background(), "user-1", experiment); err != nil {
+		t.Fatalf("AssignVariant with nil bus: %v", err)
 	}
 }

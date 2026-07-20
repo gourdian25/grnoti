@@ -166,6 +166,16 @@ type DispatchResult struct {
 	InvalidTokens   []string
 	RetryableErrors int
 	Errors          []error
+
+	// SuccessByPlatform/FailureByPlatform break SuccessCount/FailureCount
+	// down per Platform — populated by dispatcher.fcm.go's Send, which
+	// dispatches each platform group separately before merging into the
+	// aggregate counts above. NotificationService uses this breakdown to
+	// call Metrics.IncNotificationsSent/Failed and
+	// Metrics.ObserveDispatchLatency with a real per-call Platform label
+	// (required by the Metrics interface) instead of guessing one.
+	SuccessByPlatform map[Platform]int
+	FailureByPlatform map[Platform]int
 }
 
 // TotalCount returns SuccessCount + FailureCount.
@@ -392,10 +402,22 @@ type ServiceConfig struct {
 	EnforceBatching          bool
 	EnablePreferencesFilter  bool
 	EnableTopicRouting       bool
-	EnableRichPush           bool
-	EnableLocalization       bool
-	EnableBackpressure       bool
-	EnableABTesting          bool
+	// EnableRichPush, EnableLocalization, EnableABTesting are
+	// composition-time flags, not read anywhere in
+	// notificationService.processEvent (service.go) directly — rich-push
+	// fields live on Message and are populated by whichever
+	// TemplateEngine ServiceDeps.Templates is; localization is a
+	// TemplateEngine decorator (localizedTemplateEngine, see
+	// localization.go) the caller wraps ServiceDeps.Templates in; A/B
+	// assignment (ExperimentEngine.AssignVariant) happens before an Event
+	// is even constructed, to decide what goes in its Payload. These
+	// three flags exist for a caller's own bookkeeping/documentation of
+	// which optional pieces a given ServiceDeps wiring includes, not as
+	// live branches in the pipeline.
+	EnableRichPush     bool
+	EnableLocalization bool
+	EnableBackpressure bool
+	EnableABTesting    bool
 	// EnableDLQ gates whether ProcessEvent publishes exhausted-retry
 	// dispatch failures to the configured DLQHandler. The reference
 	// implementation had no such wiring at all (see

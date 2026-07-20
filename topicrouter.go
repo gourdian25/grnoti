@@ -30,6 +30,35 @@ func (t TopicTarget) IsTopicBased() bool       { return true }
 func (t TopicTarget) GetTopicName() string     { return t.Topic }
 func (t TopicTarget) GetTokens() []DeviceToken { return nil }
 
+// resolveTokensForEvent resolves event's recipient device tokens: direct
+// tokens embedded in the event take precedence (matching service.go's
+// "default to Android for an unset platform" convention, see
+// dispatcher.fcm.go), then an authenticated user's tokens via tokenStore,
+// then an anonymous visitor's. Shared by NotificationService's own
+// resolution and every TopicRouter's token-fallback branch below — a fix
+// found while wiring Stage 12's full pipeline: eventTypeTopicRouter and
+// tokenOnlyRouter originally called tokenStore.GetActiveTokens(ctx,
+// event.UserID) unconditionally in their fallback branch, which silently
+// resolved to zero tokens for an anonymous or direct-token event (an empty
+// UserID matches nothing) instead of actually resolving them. See
+// docs/plan/grnoti-plan.md's Stage 12 implementation log.
+func resolveTokensForEvent(ctx context.Context, event Event, tokenStore TokenStore) ([]DeviceToken, error) {
+	switch {
+	case event.HasDirectTokens():
+		tokens := make([]DeviceToken, len(event.DeviceTokens))
+		for i, tok := range event.DeviceTokens {
+			tokens[i] = DeviceToken{Token: tok, Platform: PlatformAndroid, IsActive: true}
+		}
+		return tokens, nil
+	case event.IsAuthenticated():
+		return tokenStore.GetActiveTokens(ctx, event.UserID)
+	case event.IsAnonymous():
+		return tokenStore.GetActiveTokensByAnonymousID(ctx, event.AnonymousID)
+	default:
+		return nil, nil // unreachable after Event.Validate(), which requires one of the above
+	}
+}
+
 // eventTypeTopicRouter is the primary TopicRouter: resolves in priority
 // order — an explicit event.Payload["topic"] override, then a static
 // event-type-to-topic mapping, then falls back to per-user device-token
@@ -67,10 +96,10 @@ func (r *eventTypeTopicRouter) ResolveTarget(ctx context.Context, event Event) (
 		return TopicTarget{Topic: topic}, nil
 	}
 
-	r.logger.Infof("grnoti: routing event %s to per-user tokens (no topic override or mapping)", event.EventID)
-	tokens, err := r.tokenStore.GetActiveTokens(ctx, event.UserID)
+	r.logger.Infof("grnoti: routing event %s to per-recipient tokens (no topic override or mapping)", event.EventID)
+	tokens, err := resolveTokensForEvent(ctx, event, r.tokenStore)
 	if err != nil {
-		return nil, fmt.Errorf("grnoti: failed to get tokens for user %s: %w", event.UserID, err)
+		return nil, fmt.Errorf("grnoti: failed to get tokens for event %s: %w", event.EventID, err)
 	}
 	return TokenTarget{Tokens: tokens}, nil
 }
@@ -98,9 +127,9 @@ func NewTokenOnlyRouter(tokenStore TokenStore) TopicRouter {
 }
 
 func (r tokenOnlyRouter) ResolveTarget(ctx context.Context, event Event) (NotificationTarget, error) {
-	tokens, err := r.tokenStore.GetActiveTokens(ctx, event.UserID)
+	tokens, err := resolveTokensForEvent(ctx, event, r.tokenStore)
 	if err != nil {
-		return nil, fmt.Errorf("grnoti: failed to get tokens for user %s: %w", event.UserID, err)
+		return nil, fmt.Errorf("grnoti: failed to get tokens for event %s: %w", event.EventID, err)
 	}
 	return TokenTarget{Tokens: tokens}, nil
 }

@@ -414,6 +414,19 @@ type PayloadValidator interface {
 type NotificationService interface {
 	ProcessEvent(ctx context.Context, event Event) (ProcessingResult, error)
 
+	// Submit is the ingestion-bridge entrypoint (docs/plan/grnoti-plan.md
+	// §3.1): pass it directly as an EventConsumer's handler —
+	// consumer.Start(ctx, service.Submit) — to wire Kafka ingestion
+	// straight into this service. When the service was constructed with
+	// ServiceConfig.EnableBackpressure, Submit enqueues onto the
+	// service's own bounded WorkerPool (non-blocking, ErrWorkerPoolFull
+	// on a full queue) instead of processing on the caller's goroutine;
+	// otherwise it's equivalent to ProcessEvent with the ProcessingResult
+	// discarded. Its signature matches WorkerPool's own Handler shape
+	// exactly, which is why it has no ProcessingResult return — use
+	// ProcessEvent directly when the caller needs that.
+	Submit(ctx context.Context, event Event) error
+
 	// Close stops any background workers (see WorkerPool) this service
 	// owns and releases resources. Idempotent. The reference
 	// implementation's NotificationService had no Close at all — see

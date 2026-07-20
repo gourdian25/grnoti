@@ -52,6 +52,8 @@ github.com/gorilla/securecookie v1.1.1/go.mod h1:ra0sb63/xPlUeL+yeDciTfxMRAA+MP+
 github.com/gorilla/sessions v1.2.1/go.mod h1:dk2InVEVJ0sfLlnXv9EAgkf6ecYs/i80K/zI+bUmuGM=
 github.com/gourdian25/grcache v0.2.0 h1:/fAW+eyiGGQSZw7ewxDlfLHgZKvzT6oRn1h5MjJGTXA=
 github.com/gourdian25/grcache v0.2.0/go.mod h1:yde5oPcM2W63H5G5tFj+fCzXCa2rvg1AgCFNh4mEWoY=
+github.com/gourdian25/grevents v0.1.1 h1:O9pDznQANzpsHZAmqUUHgrdY7GPKZ70ChT7Pg4Bx7jA=
+github.com/gourdian25/grevents v0.1.1/go.mod h1:FgznAaLIFtuXvOi6IXP3E8RRShUW0LY0iECmCk50Zng=
 github.com/gourdian25/grlog v0.1.1 h1:S0spb+e6sMAXqi0qgizBCQxDL1HfkZt0pfWTINQb/UI=
 github.com/gourdian25/grlog v0.1.1/go.mod h1:EAH3pwL1Ow+NT035nYsfzRDAT3/rFvfTpFMVl/CVHbM=
 github.com/hashicorp/go-uuid v1.0.2/go.mod h1:6SBZvOh/SIDV7/2o3Jml5SYk/TvGqwFJ/bN7x4byOro=

@@ -30,6 +30,8 @@
 │       └── grnoti-plan.md
 ├── docs.go
 ├── errors.go
+├── events.go
+├── events_test.go
 ├── eventtypes.go
 ├── eventtypes_test.go
 ├── experiment.go
@@ -74,6 +76,8 @@
 ├── ratelimiter_test.go
 ├── retrystrategy.go
 ├── retrystrategy_test.go
+├── service.go
+├── service_test.go
 ├── sqlc.yaml
 ├── templateengine.go
 ├── templateengine_test.go
@@ -88,4 +92,4 @@
 ├── workerpool.go
 └── workerpool_test.go
 
-5 directories, 83 files
+5 directories, 87 files

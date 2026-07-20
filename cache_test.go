@@ -182,7 +182,7 @@ func TestCachedPreferencesStore_Close_ClosesDurableNotCache(t *testing.T) {
 }
 
 func TestCacheBackedExperimentEngine_AssignAndGet(t *testing.T) {
-	engine := NewCacheBackedExperimentEngine(newTestCache(t), nil, nil)
+	engine := NewCacheBackedExperimentEngine(newTestCache(t), nil, nil, nil)
 	ctx := context.Background()
 	experiment := &Experiment{ID: "exp-1", Variants: []ExperimentVariant{{ID: "a", Weight: 1}, {ID: "b", Weight: 1}}}
 
@@ -209,7 +209,7 @@ func TestCacheBackedExperimentEngine_AssignAndGet(t *testing.T) {
 }
 
 func TestCacheBackedExperimentEngine_GetVariant_Unassigned(t *testing.T) {
-	engine := NewCacheBackedExperimentEngine(newTestCache(t), nil, nil)
+	engine := NewCacheBackedExperimentEngine(newTestCache(t), nil, nil, nil)
 	got, err := engine.GetVariant(context.Background(), "user-1", "never-assigned")
 	if err != nil || got != nil {
 		t.Fatalf("GetVariant(unassigned) = (%+v, %v), want (nil, nil)", got, err)
@@ -217,9 +217,35 @@ func TestCacheBackedExperimentEngine_GetVariant_Unassigned(t *testing.T) {
 }
 
 func TestCacheBackedExperimentEngine_NoVariants(t *testing.T) {
-	engine := NewCacheBackedExperimentEngine(newTestCache(t), nil, nil)
+	engine := NewCacheBackedExperimentEngine(newTestCache(t), nil, nil, nil)
 	_, err := engine.AssignVariant(context.Background(), "user-1", &Experiment{ID: "empty"})
 	if err != ErrExperimentHasNoVariants {
 		t.Fatalf("AssignVariant(no variants) error = %v, want ErrExperimentHasNoVariants", err)
+	}
+}
+
+func TestCacheBackedExperimentEngine_AssignVariant_PublishesOnceOnNewAssignment(t *testing.T) {
+	bus := &stubBus{}
+	engine := NewCacheBackedExperimentEngine(newTestCache(t), nil, bus, nil)
+	ctx := context.Background()
+	experiment := &Experiment{ID: "exp-1", Variants: []ExperimentVariant{{ID: "only", Weight: 1}}}
+
+	assigned, err := engine.AssignVariant(ctx, "user-1", experiment)
+	if err != nil {
+		t.Fatalf("AssignVariant: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := engine.AssignVariant(ctx, "user-1", experiment); err != nil {
+			t.Fatalf("AssignVariant (repeat %d): %v", i, err)
+		}
+	}
+
+	events := bus.publishedEvents()
+	if len(events) != 1 {
+		t.Fatalf("Publish call count = %d, want exactly 1 (only the first, new assignment)", len(events))
+	}
+	payload, ok := events[0].Payload.(ExperimentAssignedPayload)
+	if !ok || payload.UserID != "user-1" || payload.ExperimentID != "exp-1" || payload.VariantID != assigned.ID {
+		t.Fatalf("Payload = %+v (ok=%v), want UserID=user-1 ExperimentID=exp-1 VariantID=%s", payload, ok, assigned.ID)
 	}
 }

@@ -7,6 +7,8 @@ import (
 	"crypto/md5" //nolint:gosec // used only for deterministic bucketing, not a security boundary
 	"encoding/binary"
 	"sync"
+
+	"github.com/gourdian25/grevents"
 )
 
 // deterministicExperimentEngine computes variant assignment as a pure
@@ -25,7 +27,9 @@ type deterministicExperimentEngine struct {
 
 	// analytics is optional (nil-safe) — see TrackImpression/TrackConversion.
 	analytics AnalyticsPublisher
-	logger    Logger
+	// bus is optional (nil-safe) — see AssignVariant/PublishAssigned.
+	bus    grevents.Bus
+	logger Logger
 }
 
 var _ ExperimentEngine = (*deterministicExperimentEngine)(nil)
@@ -40,11 +44,14 @@ var _ ExperimentEngine = (*deterministicExperimentEngine)(nil)
 // Parameters:
 //   - analytics: AnalyticsPublisher — may be nil; TrackImpression/
 //     TrackConversion log and no-op rather than erroring when unset
+//   - bus: grevents.Bus — may be nil; AssignVariant publishes
+//     TopicExperimentAssigned on a new assignment when set (§1.2)
 //   - logger: Logger — may be nil
-func NewDeterministicExperimentEngine(analytics AnalyticsPublisher, logger Logger) ExperimentEngine {
+func NewDeterministicExperimentEngine(analytics AnalyticsPublisher, bus grevents.Bus, logger Logger) ExperimentEngine {
 	return &deterministicExperimentEngine{
 		assignments: make(map[string]ExperimentVariant),
 		analytics:   analytics,
+		bus:         bus,
 		logger:      OrNop(logger),
 	}
 }
@@ -61,7 +68,7 @@ func (e *deterministicExperimentEngine) GetVariant(_ context.Context, userID str
 	return nil, nil
 }
 
-func (e *deterministicExperimentEngine) AssignVariant(_ context.Context, userID string, experiment *Experiment) (*ExperimentVariant, error) {
+func (e *deterministicExperimentEngine) AssignVariant(ctx context.Context, userID string, experiment *Experiment) (*ExperimentVariant, error) {
 	if experiment == nil || len(experiment.Variants) == 0 {
 		return nil, ErrExperimentHasNoVariants
 	}
@@ -80,6 +87,10 @@ func (e *deterministicExperimentEngine) AssignVariant(_ context.Context, userID 
 	e.mu.Lock()
 	e.assignments[key] = variant
 	e.mu.Unlock()
+
+	PublishAssigned(ctx, e.bus, e.logger, ExperimentAssignedPayload{
+		UserID: userID, ExperimentID: experiment.ID, VariantID: variant.ID,
+	})
 
 	return &variant, nil
 }

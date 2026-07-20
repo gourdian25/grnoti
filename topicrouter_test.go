@@ -82,3 +82,46 @@ func TestTokenOnlyRouter(t *testing.T) {
 		t.Fatalf("ResolveTarget() = %+v, want token-based target ignoring any topic payload", target)
 	}
 }
+
+// TestEventTypeTopicRouter_FallsBackToTokens_AnonymousEvent is the
+// regression test for a real gap found while wiring Stage 12: the fallback
+// branch originally called GetActiveTokens(ctx, event.UserID)
+// unconditionally, so an anonymous event (empty UserID) silently resolved
+// to zero tokens instead of using GetActiveTokensByAnonymousID.
+func TestEventTypeTopicRouter_FallsBackToTokens_AnonymousEvent(t *testing.T) {
+	store := &stubTokenStore{tokens: []DeviceToken{{Token: "t1"}}}
+	router := NewEventTypeTopicRouter(nil, store, nil)
+	target, err := router.ResolveTarget(context.Background(), Event{AnonymousID: "a1", Type: EventTypeSystemAlert})
+	if err != nil {
+		t.Fatalf("ResolveTarget: %v", err)
+	}
+	if target.IsTopicBased() || len(target.GetTokens()) != 1 {
+		t.Fatalf("ResolveTarget() = %+v, want token-based target with 1 token for an anonymous event", target)
+	}
+}
+
+// TestEventTypeTopicRouter_FallsBackToTokens_DirectTokens is the same
+// regression, for an event carrying direct device tokens with no
+// UserID/AnonymousID at all.
+func TestEventTypeTopicRouter_FallsBackToTokens_DirectTokens(t *testing.T) {
+	router := NewEventTypeTopicRouter(nil, &stubTokenStore{}, nil)
+	target, err := router.ResolveTarget(context.Background(), Event{DeviceTokens: []string{"direct-1", "direct-2"}, Type: EventTypeSystemAlert})
+	if err != nil {
+		t.Fatalf("ResolveTarget: %v", err)
+	}
+	if target.IsTopicBased() || len(target.GetTokens()) != 2 {
+		t.Fatalf("ResolveTarget() = %+v, want token-based target with 2 direct tokens", target)
+	}
+}
+
+func TestTokenOnlyRouter_AnonymousEvent(t *testing.T) {
+	store := &stubTokenStore{tokens: []DeviceToken{{Token: "t1"}}}
+	router := NewTokenOnlyRouter(store)
+	target, err := router.ResolveTarget(context.Background(), Event{AnonymousID: "a1", Type: EventTypeSystemAlert})
+	if err != nil {
+		t.Fatalf("ResolveTarget: %v", err)
+	}
+	if target.IsTopicBased() || len(target.GetTokens()) != 1 {
+		t.Fatalf("ResolveTarget() = %+v, want token-based target with 1 token for an anonymous event", target)
+	}
+}

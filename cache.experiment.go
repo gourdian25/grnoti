@@ -8,6 +8,7 @@ import (
 	"errors"
 
 	"github.com/gourdian25/grcache"
+	"github.com/gourdian25/grevents"
 )
 
 // cacheExperimentEngine is ExperimentEngine backed by a grcache.Cache for
@@ -22,7 +23,9 @@ import (
 type cacheExperimentEngine struct {
 	cache     grcache.Cache
 	analytics AnalyticsPublisher
-	logger    Logger
+	// bus is optional (nil-safe) — see AssignVariant/PublishAssigned.
+	bus    grevents.Bus
+	logger Logger
 }
 
 var _ ExperimentEngine = (*cacheExperimentEngine)(nil)
@@ -34,9 +37,11 @@ var _ ExperimentEngine = (*cacheExperimentEngine)(nil)
 //   - cache: grcache.Cache — caller-owned; not closed by this engine (it
 //     has no Close method at all — see the ExperimentEngine interface)
 //   - analytics: AnalyticsPublisher — may be nil, see TrackImpression
+//   - bus: grevents.Bus — may be nil; AssignVariant publishes
+//     TopicExperimentAssigned on a new assignment when set (§1.2)
 //   - logger: Logger — may be nil
-func NewCacheBackedExperimentEngine(cache grcache.Cache, analytics AnalyticsPublisher, logger Logger) ExperimentEngine {
-	return &cacheExperimentEngine{cache: cache, analytics: analytics, logger: OrNop(logger)}
+func NewCacheBackedExperimentEngine(cache grcache.Cache, analytics AnalyticsPublisher, bus grevents.Bus, logger Logger) ExperimentEngine {
+	return &cacheExperimentEngine{cache: cache, analytics: analytics, bus: bus, logger: OrNop(logger)}
 }
 
 func (e *cacheExperimentEngine) GetVariant(ctx context.Context, userID string, experimentID string) (*ExperimentVariant, error) {
@@ -76,6 +81,10 @@ func (e *cacheExperimentEngine) AssignVariant(ctx context.Context, userID string
 			e.logger.Warnf("grnoti: caching assignment for %s/%s failed: %v", userID, experiment.ID, setErr)
 		}
 	}
+
+	PublishAssigned(ctx, e.bus, e.logger, ExperimentAssignedPayload{
+		UserID: userID, ExperimentID: experiment.ID, VariantID: variant.ID,
+	})
 
 	return &variant, nil
 }

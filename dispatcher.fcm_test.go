@@ -328,6 +328,30 @@ func TestFCMDispatcher_Send_GroupsTokensByPlatform(t *testing.T) {
 	}
 }
 
+func TestFCMDispatcher_Send_PopulatesPerPlatformBreakdown(t *testing.T) {
+	client := &fakeFCMClient{perTokenError: map[string]error{"i1": errors.New("NotRegistered")}}
+	d, _ := NewFCMDispatcher(FCMDispatcherDeps{Client: client})
+
+	tokens := []DeviceToken{
+		{Token: "a1", Platform: PlatformAndroid},
+		{Token: "a2", Platform: PlatformAndroid},
+		{Token: "i1", Platform: PlatformIOS},
+	}
+	result, err := d.Send(context.Background(), tokens, Message{Title: "hi"})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if result.SuccessByPlatform[PlatformAndroid] != 2 {
+		t.Fatalf("SuccessByPlatform[android] = %d, want 2", result.SuccessByPlatform[PlatformAndroid])
+	}
+	if result.FailureByPlatform[PlatformIOS] != 1 {
+		t.Fatalf("FailureByPlatform[ios] = %d, want 1", result.FailureByPlatform[PlatformIOS])
+	}
+	if result.SuccessByPlatform[PlatformIOS] != 0 || result.FailureByPlatform[PlatformAndroid] != 0 {
+		t.Fatalf("cross-platform counts leaked: SuccessByPlatform=%v FailureByPlatform=%v", result.SuccessByPlatform, result.FailureByPlatform)
+	}
+}
+
 func TestFCMDispatcher_Send_RateLimiterGatesEachBatch(t *testing.T) {
 	client := &fakeFCMClient{}
 	rl := &countingRateLimiter{}

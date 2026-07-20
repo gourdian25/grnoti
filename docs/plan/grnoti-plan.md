@@ -553,7 +553,7 @@ flagged rather than buried:
 
 Stage 0, on approval of this plan.
 
-## 11. Implementation log (decisions made or corrected during Stages 0-10)
+## 11. Implementation log (decisions made or corrected during Stages 0-12)
 
 - **Real local services used throughout**, per the ecosystem's own testing
   philosophy — `grnoti-mongo`, `grnoti-postgres`, `grnoti-redis` docker
@@ -719,3 +719,151 @@ Stage 0, on approval of this plan.
     signal to classify on. §3.3's 12 dead `ErrFCM*` sentinels were never
     carried into grnoti's `errors.go` in the first place (Stage 1), so
     there was nothing left to delete at this stage.
+- **Stage 11 — `events.go`**: `github.com/gourdian25/grevents` v0.1.1 added
+  as a new dependency (resolved locally via `go.work`, not the module
+  proxy). `TopicNotificationSent`/`TopicNotificationFailed`/
+  `TopicExperimentAssigned` + `PublishSent`/`PublishFailed`/
+  `PublishAssigned`, structurally identical to graudit's own
+  `PublishRecorded` (`bus == nil` → silent no-op; a `bus.Publish` error is
+  logged via `Warnf`, never propagated to the caller) — the exact,
+  already-proven pattern the plan called for, not a reinterpretation of it.
+  - `PublishSent`/`PublishFailed` exist in this file but are not called
+    from anywhere yet — nothing in the repo produces a `DispatchResult`
+    tied to an `Event` until `NotificationService` exists in Stage 12,
+    which is where they get wired in.
+  - `PublishAssigned` *is* wired now, into both existing
+    `ExperimentEngine` implementations (`deterministicExperimentEngine` in
+    experiment.go, `cacheExperimentEngine` in cache.experiment.go), since
+    both already existed from Stages 2/4. Both constructors gained a new
+    `bus grevents.Bus` parameter (nil-safe), inserted between `analytics`
+    and `logger` — a breaking signature change requiring updates to every
+    existing call site (8 across `experiment_test.go`, `cache_test.go`,
+    `cache.redis_test.go`).
+  - `AssignVariant` publishes only on a genuinely new assignment (the
+    branch that actually computes `deterministicPick`), never on a lookup
+    of an already-assigned user — verified by
+    `TestDeterministicExperimentEngine_AssignVariant_PublishesOnceOnNewAssignment`
+    and its cache-backed-engine equivalent, both asserting exactly one
+    `Publish` call across several repeat `AssignVariant` calls for the
+    same (user, experiment).
+  - Documented, not fixed: `deterministicExperimentEngine`'s existing
+    RLock-then-Lock structure (kept as-is from Stage 2 to preserve its
+    read-mostly performance characteristic — see its own doc comment)
+    means a rare concurrent race on a brand-new (user, experiment) pair can
+    make two goroutines each independently observe "unassigned" and both
+    publish. The map write stays correct either way (both compute the
+    identical deterministic variant), so this is at-least-once delivery
+    for a specific assignment, not exactly-once — an accepted
+    characteristic of a best-effort side channel, explicitly called out
+    since grevents' own `Bus.Publish` makes no exactly-once guarantee
+    either.
+  - **Two test-assertion bugs found and fixed before landing** (not
+    product bugs, and not the cross-run-persistence class from Stages
+    7-10 — grevents is in-process, so that class doesn't apply here): the
+    first draft of `TestPublishSent_PublishesExpectedTopicAndPayload`
+    checked the grevents.Event *envelope's* `Timestamp` field, but
+    `PublishSent` only back-fills the *payload's* `Timestamp` field — the
+    envelope-level one is a real `Bus` implementation's job to set (per
+    `grevents.Event`'s own doc comment), and `stubBus` deliberately
+    doesn't do that. Separately, `TestPublishAssigned_
+    PublishesExpectedTopicAndPayload` compared the received payload to the
+    input payload via whole-struct equality, which fails by construction
+    since `PublishAssigned` back-fills a zero `Timestamp` before
+    publishing — fixed by comparing the non-timestamp fields individually
+    and asserting `Timestamp` is non-zero separately.
+  - `TestExperimentAssigned_RealBusEndToEnd` exercises a real
+    `grevents.NewBus()` (subscribe, assign, receive), not just `stubBus` —
+    grevents is in-process and needs no live service, so unlike
+    Mongo/Postgres/Redis/Kafka/FCM there's no cost/practicality reason to
+    only test the stub.
+- **Stage 12 — `service.go`**: `NotificationService`/`notificationService`,
+  wiring Stages 1-11 into one `ProcessEvent` pipeline (Validate →
+  Idempotency → Preferences → Build message → Resolve target → Dispatch →
+  Mark invalid tokens → DLQ → Metrics → Lifecycle events → Mark processed).
+  `ServiceDeps` follows `WorkerPoolDeps`'s shape (required collaborators +
+  a `Config` sub-struct + optional collaborators + `Logger`).
+  - **Ordering fix (§ the plan's own Stage 12 description)**: idempotency
+    now runs before the preferences check, not after — the reference paid
+    for a full `PreferencesStore` round-trip on every redelivered
+    duplicate (e.g. Kafka at-least-once redelivery) before ever
+    discovering the event didn't need any work at all.
+    `TestProcessEvent_IdempotencyShortCircuitsBeforePreferences` proves
+    this with a `PreferencesFilter` that fails the test outright if it's
+    ever invoked for an already-processed event.
+  - **§3.6 fix landed for real**: `DLQHandler.PublishToDLQ` is now
+    actually called. The publish condition is `dispatchResult.FailureCount
+    - len(dispatchResult.InvalidTokens) > 0` — deliberately not just
+    "any failure", since a permanently-invalid token is already handled
+    via `TokenStore.MarkInvalid` and doesn't belong in a durable retry
+    queue; deliberately not gated on `RetryableErrors` alone either, since
+    a *total* request-level dispatch failure (the whole batch call
+    erroring) never populates that counter, only `FailureCount`/`Errors`
+    do.
+  - **§3.1 fix, and how the interface changed to support it**:
+    `NotificationService` gained a new `Submit(ctx, event) error` method
+    (a signature-compatible drop-in for `EventConsumer.Start`'s handler
+    parameter) — `consumer.Start(ctx, service.Submit)` is now the entire
+    ingestion bridge. When `Config.EnableBackpressure` is set, the service
+    builds and owns its own internal `*WorkerPool` at construction time
+    (its `Handler` calls back into the same unexported `processEvent`
+    core); `Submit` enqueues onto it. `ProcessEvent` itself always stays
+    synchronous on the calling goroutine regardless of backpressure
+    configuration, so direct/test callers needing the `ProcessingResult`
+    aren't forced through the pool.
+    `TestKafkaEventConsumer_WiresToNotificationService` (kafka_test.go)
+    proves the whole chain against a real local Kafka broker, not just a
+    handler stub.
+  - **Real gap found in `topicrouter.go`, fixed here**: wiring topic
+    routing into the full pipeline exposed that `eventTypeTopicRouter`'s
+    and `tokenOnlyRouter`'s fallback branch called
+    `tokenStore.GetActiveTokens(ctx, event.UserID)` unconditionally — an
+    anonymous or direct-token event (empty `UserID`) silently resolved to
+    zero tokens instead of actually being resolved, when topic routing
+    was enabled. Fixed by extracting the same three-way
+    direct-tokens/authenticated/anonymous resolution `service.go` itself
+    needs into a shared `resolveTokensForEvent` helper, used by both
+    routers' fallback branches and by `service.go`'s own non-topic-routing
+    path — closing the gap and de-duplicating the logic in one change.
+    `TestEventTypeTopicRouter_FallsBackToTokens_AnonymousEvent`/
+    `_DirectTokens` and `TestTokenOnlyRouter_AnonymousEvent` are the
+    regression tests.
+  - **`DispatchResult` gained `SuccessByPlatform`/`FailureByPlatform`
+    (`map[Platform]int`)**: `Metrics.IncNotificationsSent/Failed` and
+    `ObserveDispatchLatency` each require a single `Platform` argument per
+    call, but `DispatchResult` — despite its own doc comment already
+    claiming "Platform... a DispatchResult applies to" — carried no
+    per-platform breakdown at all; `dispatcher.fcm.go`'s `Send` merges
+    every platform's goroutine result into flat aggregate counts before
+    returning. Rather than have `service.go` fabricate per-platform
+    attribution it doesn't actually have, `dispatcher.fcm.go`'s `Send` now
+    populates the two new maps from the real per-platform-group results it
+    already computes internally, and `service.go` iterates them for
+    accurate per-platform metrics calls.
+    `TestFCMDispatcher_Send_PopulatesPerPlatformBreakdown` covers the new
+    field; `ServiceDeps.Metrics`'s doc comment explains why
+    `IncInvalidTokens` is deliberately *not* called from `service.go` —
+    `dispatcher.fcm.go` already calls it, and calling it again from
+    `service.go` with the same `Metrics` instance would double-count.
+  - **Two real bugs found via `service_test.go`, fixed before landing**
+    (not just written correctly the first time): (1) the first draft of
+    `processEvent` never actually implemented the "zero tokens resolved →
+    skip" outcome at all, despite it being explicitly planned — a dispatch
+    with zero recipients silently fell through to "processed successfully
+    with nothing sent" instead of a reported skip; caught by
+    `TestProcessEvent_NoActiveTokens` and
+    `TestProcessEvent_Metrics_SkippedEventRecordsSkip` both failing on the
+    very first run. Fixed by checking `result.TokenCount == 0 &&
+    dispatchResult.TotalCount() == 0` right after dispatch (a check that
+    can't misfire on a topic-based dispatch, which always has
+    `TotalCount() >= 1` from its synthetic result even though it also
+    leaves `TokenCount` at 0). (2) Two of the new tests themselves
+    constructed an `Event{}` literal without setting `Priority`, tripping
+    `Event.Validate()`'s own `ErrInvalidPriority` check — a test bug, not
+    a product one, fixed by setting `Priority: PriorityNormal`.
+  - `ServiceConfig.EnableRichPush`/`EnableLocalization`/`EnableABTesting`
+    are documented as composition-time flags (informational — they
+    describe which optional pieces a given `ServiceDeps` wiring includes)
+    rather than live branches in `processEvent`, since what they'd
+    describe is actually decided by which concrete `TemplateEngine`/
+    `ExperimentEngine` a caller composes *before* constructing
+    `ServiceDeps`, not by anything `processEvent` itself can gate on.

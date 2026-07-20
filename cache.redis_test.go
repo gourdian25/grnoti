@@ -86,7 +86,7 @@ func TestCachedPreferencesStore_Redis_ReadThroughAndInvalidate(t *testing.T) {
 }
 
 func TestCacheBackedExperimentEngine_Redis_AssignAndGet(t *testing.T) {
-	engine := NewCacheBackedExperimentEngine(newTestRedisCache(t), nil, nil)
+	engine := NewCacheBackedExperimentEngine(newTestRedisCache(t), nil, nil, nil)
 	ctx := context.Background()
 	nonce := time.Now().UnixNano()
 	experiment := &Experiment{ID: fmt.Sprintf("redis-exp-%s-%d", t.Name(), nonce), Variants: []ExperimentVariant{{ID: "a", Weight: 1}, {ID: "b", Weight: 1}}}

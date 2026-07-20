@@ -375,6 +375,67 @@ func TestKafkaEventConsumer_WiresToWorkerPool(t *testing.T) {
 	})
 }
 
+// TestKafkaEventConsumer_WiresToNotificationService is the end-to-end proof
+// of docs/plan/grnoti-plan.md §3.1's stated fix, using the real
+// NotificationService (Stage 12) rather than a bare handler stub as
+// TestKafkaEventConsumer_WiresToWorkerPool above does: consumer.Start(ctx,
+// service.Submit) is the entire ingestion bridge — Submit internally
+// enqueues onto the service's own WorkerPool (EnableBackpressure) and a
+// pool worker calls back into the same ProcessEvent pipeline that marks
+// idempotency, dispatches, and would DLQ/publish lifecycle events.
+func TestKafkaEventConsumer_WiresToNotificationService(t *testing.T) {
+	topic := testKafkaTopic(t)
+	producer := rawSaramaProducer(t)
+
+	consumer, err := NewKafkaEventConsumer(KafkaConsumerConfig{
+		Brokers: testKafkaBrokers, GroupID: "grnoti-test-group-" + topic, Topics: []string{topic},
+	})
+	if err != nil {
+		t.Skipf("Kafka not available, skipping: %v", err)
+	}
+	defer consumer.Close()
+
+	tokenStore := NewMemoryTokenStore()
+	_ = tokenStore.SaveToken(context.Background(), DeviceToken{Token: "t1", UserID: "u1", Platform: PlatformAndroid})
+	idempotency := newTestIdempotencyStore(t)
+
+	svc, err := NewNotificationService(ServiceDeps{
+		TokenStore:  tokenStore,
+		Dispatcher:  &stubDispatcher{},
+		Templates:   NewTemplateEngine(),
+		Idempotency: idempotency,
+		Config: ServiceConfig{
+			IdempotencyTTL:     time.Hour,
+			EnableBackpressure: true,
+		},
+		WorkerPoolConfig: WorkerPoolConfig{Workers: 2, QueueSize: 10},
+	})
+	if err != nil {
+		t.Fatalf("NewNotificationService: %v", err)
+	}
+	defer svc.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = consumer.Start(ctx, svc.Submit)
+	}()
+	if err := consumer.(*kafkaEventConsumer).WaitReady(context.Background()); err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+
+	event := Event{EventID: "kafka-e2e-1", UserID: "u1", Type: EventTypeSystemAlert, Priority: PriorityNormal}
+	payload, _ := json.Marshal(event)
+	if _, _, err := producer.SendMessage(&sarama.ProducerMessage{Topic: topic, Value: sarama.ByteEncoder(payload)}); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	waitForCondition(t, 15*time.Second, func() bool {
+		processed, _ := idempotency.IsProcessed(context.Background(), "kafka-e2e-1")
+		return processed
+	})
+}
+
 func waitForCondition(t *testing.T, timeout time.Duration, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
