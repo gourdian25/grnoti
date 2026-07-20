@@ -30,6 +30,7 @@
 │       └── grnoti-plan.md
 ├── docs.go
 ├── errors.go
+├── errors_test.go
 ├── events.go
 ├── events_test.go
 ├── eventtypes.go
@@ -43,23 +44,11 @@
 ├── interfaces.go
 ├── internal/
 │   └── postgresdb/
-│       ├── db.go
-│       ├── dlq.sql.go
-│       ├── experiments.sql.go
-│       ├── models.go
-│       ├── preferences.sql.go
-│       ├── querier.go
-│       ├── queries/
-│       │   ├── dlq.sql
-│       │   ├── experiments.sql
-│       │   ├── preferences.sql
-│       │   └── tokens.sql
-│       ├── schema.sql
-│       └── tokens.sql.go
 ├── kafka_test.go
 ├── localization.go
 ├── localization_test.go
 ├── logger.go
+├── logger_test.go
 ├── memory.go
 ├── memory_test.go
 ├── payloadvalidator.go
@@ -93,4 +82,4 @@
 ├── workerpool.go
 └── workerpool_test.go
 
-5 directories, 88 files
+4 directories, 78 files
