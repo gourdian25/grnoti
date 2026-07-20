@@ -155,13 +155,7 @@ func (s *memoryPreferencesStore) IsEventTypeEnabled(ctx context.Context, userID 
 		}
 		return false, err
 	}
-	if !prefs.GlobalEnabled {
-		return false, nil
-	}
-	if enabled, ok := prefs.EventTypeSettings[eventType]; ok {
-		return enabled, nil
-	}
-	return true, nil
+	return prefs.IsEventTypeEnabled(eventType), nil
 }
 
 func (s *memoryPreferencesStore) Close() error { return nil }

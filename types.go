@@ -208,6 +208,22 @@ type NotificationPreferences struct {
 	UpdatedAt         time.Time
 }
 
+// IsEventTypeEnabled evaluates whether eventType should be sent under p:
+// false if globally disabled, else the explicit per-type setting if one
+// exists, else true (an unconfigured event type defaults to enabled, not
+// disabled). Shared by every PreferencesStore implementation's own
+// IsEventTypeEnabled method so the "unconfigured defaults to enabled" rule
+// is defined exactly once.
+func (p *NotificationPreferences) IsEventTypeEnabled(eventType EventType) bool {
+	if !p.GlobalEnabled {
+		return false
+	}
+	if enabled, ok := p.EventTypeSettings[eventType]; ok {
+		return enabled
+	}
+	return true
+}
+
 // MessageTemplate is what callers register with a TemplateEngine to define
 // how an EventType renders into a Message.
 type MessageTemplate struct {

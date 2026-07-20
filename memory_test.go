@@ -214,7 +214,7 @@ func TestMemoryDLQHandler_MarkRetried_ExhaustsAfterMaxRetries(t *testing.T) {
 }
 
 func TestMemoryDLQHandler_MarkRetried_GoesBackToPending(t *testing.T) {
-	h := NewMemoryDLQHandler(5, time.Millisecond, time.Second)
+	h := NewMemoryDLQHandler(5, 0, time.Second) // retryDelay=0 so PublishToDLQ's event is immediately claimable
 	ctx := context.Background()
 	_ = h.PublishToDLQ(ctx, Event{EventID: "e1"}, "boom")
 	_, _ = h.ClaimRetryableEvents(ctx, 10)
