@@ -133,6 +133,25 @@ func compileTemplate(eventType EventType, tmpl MessageTemplate) (*compiledTempla
 	if err != nil {
 		return nil, fmt.Errorf("grnoti: parsing body template for %s: %w", eventType, err)
 	}
+	// DeepLink and each Action.URL are re-parsed lazily per render (see
+	// renderMessage) rather than stored here as *template.Template, since
+	// that's the existing shape of compiledTemplate — but they must still be
+	// validated up front, at RegisterTemplate time, exactly like title/body
+	// above: without this, a malformed deep-link/action template would only
+	// surface (and previously, silently: see renderMessage) the first time
+	// an event of this type was actually sent.
+	if strings.Contains(tmpl.DeepLink, "{{") {
+		if _, err := template.New("deeplink").Parse(tmpl.DeepLink); err != nil {
+			return nil, fmt.Errorf("grnoti: parsing deep link template for %s: %w", eventType, err)
+		}
+	}
+	for i, action := range tmpl.Actions {
+		if strings.Contains(action.URL, "{{") {
+			if _, err := template.New("action").Parse(action.URL); err != nil {
+				return nil, fmt.Errorf("grnoti: parsing action[%d] url template for %s: %w", i, eventType, err)
+			}
+		}
+	}
 	return &compiledTemplate{
 		titleTmpl:   titleTmpl,
 		bodyTmpl:    bodyTmpl,
@@ -197,17 +216,21 @@ func renderMessage(compiled *compiledTemplate, event Event) (Message, error) {
 	for i, action := range compiled.actions {
 		msg.Actions[i] = action
 		if strings.Contains(action.URL, "{{") {
-			if rendered, err := renderInline(action.URL, data); err == nil {
-				msg.Actions[i].URL = rendered
+			rendered, err := renderInline(action.URL, data)
+			if err != nil {
+				return Message{}, fmt.Errorf("grnoti: rendering action[%d] url for %s: %w", i, event.Type, err)
 			}
+			msg.Actions[i].URL = rendered
 		}
 	}
 
 	msg.DeepLink = compiled.deepLink
 	if strings.Contains(compiled.deepLink, "{{") {
-		if rendered, err := renderInline(compiled.deepLink, data); err == nil {
-			msg.DeepLink = rendered
+		rendered, err := renderInline(compiled.deepLink, data)
+		if err != nil {
+			return Message{}, fmt.Errorf("grnoti: rendering deep link for %s: %w", event.Type, err)
 		}
+		msg.DeepLink = rendered
 	}
 	if dl, ok := event.Payload["deep_link"]; ok {
 		msg.DeepLink = dl

@@ -4,6 +4,7 @@ package grnoti
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 )
@@ -134,6 +135,36 @@ func TestDeterministicExperimentEngine_TrackImpression_NoPublisher(t *testing.T)
 	engine := NewDeterministicExperimentEngine(nil, nil, nil)
 	if err := engine.TrackImpression(context.Background(), "user-1", "exp-1", "control"); err != nil {
 		t.Fatalf("TrackImpression with no publisher: %v", err)
+	}
+}
+
+// TestDeterministicPick_ZeroWeightTreatedAsOne proves a Variant with
+// Weight<=0 still gets a bucket (treated as weight 1) instead of being
+// unreachable — every variant, no matter how it's configured, must be
+// pickable.
+func TestDeterministicPick_ZeroWeightTreatedAsOne(t *testing.T) {
+	experiment := &Experiment{
+		ID: "exp-1",
+		Variants: []ExperimentVariant{
+			{ID: "zero-weight", Weight: 0},
+			{ID: "unset-weight"}, // Weight also defaults to 0
+		},
+	}
+	seen := map[string]bool{}
+	for i := 0; i < 200; i++ {
+		userID := fmt.Sprintf("user-%d", i)
+		v := deterministicPick(userID, experiment)
+		seen[v.ID] = true
+	}
+	if !seen["zero-weight"] || !seen["unset-weight"] {
+		t.Fatalf("deterministicPick only ever picked %v across 200 users, want both zero-weight variants reachable", seen)
+	}
+}
+
+func TestDeterministicExperimentEngine_TrackConversion_NoPublisher(t *testing.T) {
+	engine := NewDeterministicExperimentEngine(nil, nil, nil)
+	if err := engine.TrackConversion(context.Background(), "user-1", "exp-1"); err != nil {
+		t.Fatalf("TrackConversion with no publisher: %v", err)
 	}
 }
 

@@ -197,6 +197,18 @@ type DLQHandler interface {
 	// must eventually be resolved via MarkRetried — an event claimed but
 	// never marked stays in DLQStatusRetrying until a backend-specific
 	// claim-timeout sweep (if configured) reclaims it.
+	//
+	// On error, the returned slice is not necessarily empty and callers
+	// must still process it: some backends (e.g. the Mongo implementation,
+	// which claims one document per iteration rather than in a single
+	// atomic statement) can already have durably transitioned a prefix of
+	// events to DLQStatusRetrying before hitting a failure on a later one.
+	// Discarding a non-nil slice just because err != nil would orphan
+	// those already-claimed events — there is no reclaim-timeout sweep in
+	// this package to recover them otherwise. Backends whose claim is a
+	// single atomic statement (e.g. Postgres) are all-or-nothing by
+	// necessity and always return a nil slice on error; that is a
+	// backend-specific limitation, not the general contract.
 	ClaimRetryableEvents(ctx context.Context, limit int) ([]*DLQEvent, error)
 
 	// MarkRetried records the outcome of a retry attempt for eventID and

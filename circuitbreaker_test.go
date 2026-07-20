@@ -90,6 +90,50 @@ func TestCircuitBreaker_InvalidConfig(t *testing.T) {
 	}
 }
 
+func TestCircuitBreaker_Execute_CanceledContext(t *testing.T) {
+	cb, _ := NewCircuitBreaker(3, time.Hour, time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := cb.Execute(ctx, func() error { return nil }); err == nil {
+		t.Fatal("Execute(canceled ctx) = nil error, want non-nil")
+	}
+}
+
+func TestNewCircuitBreakerWithConfig_DefaultsMaxHalfOpenRequests(t *testing.T) {
+	cb, err := NewCircuitBreakerWithConfig(CircuitBreakerConfig{
+		MaxFailures: 1, Timeout: time.Hour, ResetTimeout: time.Hour, MaxHalfOpenRequests: 0,
+	})
+	if err != nil {
+		t.Fatalf("NewCircuitBreakerWithConfig: %v", err)
+	}
+	scb := cb.(*standardCircuitBreaker)
+	if scb.config.MaxHalfOpenRequests != 1 {
+		t.Fatalf("MaxHalfOpenRequests = %d, want 1 (the default)", scb.config.MaxHalfOpenRequests)
+	}
+}
+
+func TestCircuitBreaker_GetStats_OpenState(t *testing.T) {
+	cb, _ := NewCircuitBreaker(1, 100*time.Millisecond, time.Hour)
+	_ = cb.Execute(context.Background(), func() error { return errors.New("boom") })
+
+	stats := cb.GetStats()
+	if stats.State != CircuitStateOpen {
+		t.Fatalf("GetStats().State = %s, want %s", stats.State, CircuitStateOpen)
+	}
+	if stats.TimeUntilNextAttempt <= 0 {
+		t.Fatalf("GetStats().TimeUntilNextAttempt = %v, want > 0 while still within Timeout", stats.TimeUntilNextAttempt)
+	}
+	if stats.OpenedAt.IsZero() {
+		t.Fatal("GetStats().OpenedAt is zero, want set once opened")
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	stats = cb.GetStats()
+	if stats.TimeUntilNextAttempt != 0 {
+		t.Fatalf("GetStats().TimeUntilNextAttempt = %v after Timeout elapsed, want 0", stats.TimeUntilNextAttempt)
+	}
+}
+
 // TestCircuitBreaker_ConcurrentExecute proves the state machine's mutex
 // protection under real concurrent load, not just single-threaded review.
 func TestCircuitBreaker_ConcurrentExecute(t *testing.T) {

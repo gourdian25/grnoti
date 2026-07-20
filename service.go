@@ -140,6 +140,10 @@ func NewNotificationService(deps ServiceDeps) (NotificationService, error) {
 			Metrics: s.metrics,
 		})
 		if err != nil {
+			// Structurally unreachable today — NewWorkerPool only errors on
+			// a nil Handler, and the closure above is never nil — but kept
+			// as a real check rather than assumed away, in case
+			// NewWorkerPool's error conditions ever grow.
 			return nil, fmt.Errorf("grnoti: build worker pool: %w", err)
 		}
 		pool.Start()

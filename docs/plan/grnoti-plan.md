@@ -905,3 +905,132 @@ Stage 0, on approval of this plan.
     `limit`), not a suppression. `TestPgInt32` (new `postgres_test.go`)
     covers the clamp behavior directly, including the overflow case.
   - `golangci-lint run` reports 0 issues after all of the above.
+- **Post-Stage-12 hardening pass: 95% coverage, three real bugs, full
+  comment audit** (requested before starting Stage 13, "make sure this
+  package is 100% perfect"). Coverage target is the main
+  `github.com/gourdian25/grnoti` package only —
+  `internal/postgresdb` (sqlc-generated) is out of scope, matching its
+  established generated-code exception elsewhere in this log; running
+  `go test ./...` (as opposed to `go test .`) dilutes the printed total
+  with that package's always-zero coverage and is not the number to trust.
+  - **Three real bugs found and fixed, not just tests added:**
+    1. `ratelimiter.redis.go`'s `UpdateLimit` was the one method on
+       `redisRateLimiter` missing the `r.closed.Load()` guard every sibling
+       (`Allow`/`Wait`/`GetStats`/`Close`) has — calling it after `Close`
+       silently mutated in-memory rate/burst fields instead of returning
+       `ErrClosed`. Fixed by adding the same guard.
+    2. `templateengine.go`'s `renderMessage` silently swallowed
+       `DeepLink`/`Action.URL` render errors
+       (`if rendered, err := renderInline(...); err == nil { ... }`),
+       shipping the literal unrendered `"{{...}}"` text to users on a
+       malformed template — invisible until first send, unlike
+       `TitleTemplate`/`BodyTemplate`, which `compileTemplate` already
+       validates at `RegisterTemplate` time. Fixed by extending
+       `compileTemplate` to also parse-validate `DeepLink` and every
+       `Actions[].URL` up front (rejecting a malformed template at
+       registration, matching title/body), and by changing
+       `renderMessage`'s two silent-swallow sites to propagate the error
+       via `return Message{}, fmt.Errorf(...)` instead — the render-time
+       branch is now only reachable via an execute-time failure (e.g.
+       `{{call .x}}`), not a parse-time one, and no longer hides anything.
+       Covered by `TestTemplateEngine_RegisterTemplate_InvalidDeepLinkSyntax`/
+       `InvalidActionURLSyntax` and
+       `TestTemplateEngine_BuildMessage_DeepLinkExecuteErrorPropagates`/
+       `ActionURLExecuteErrorPropagates`.
+    3. `dlq.mongo.go`'s `ClaimRetryableEvents` — investigated as a
+       suspected bug (Mongo returns `(claimed, err)` with `claimed`
+       non-empty on a mid-loop error, unlike Postgres's `(nil, err)`) and
+       confirmed to **not** be one: Mongo claims one document per iteration
+       (no single-statement "claim up to N, SKIP LOCKED" equivalent to
+       Postgres), so a prefix of `claimed` was already durably transitioned
+       to `DLQStatusRetrying` before a later iteration's error — discarding
+       it would orphan those events forever, since this package has no
+       reclaim-timeout sweep. Postgres's all-or-nothing return is a
+       consequence of being one atomic SQL statement, not a "more correct"
+       contract Mongo should match. Fixed by documenting the real contract
+       instead of changing behavior: `DLQHandler.ClaimRetryableEvents`'s
+       doc comment (interfaces.go) now states explicitly that callers must
+       process a non-nil returned slice even when `err != nil`, and
+       `mongoDLQHandler.ClaimRetryableEvents` gets the same clarification
+       pointing at the interface doc.
+  - Two branches left intentionally uncovered, each with an inline comment
+    explaining why rather than a silent gap: `service.go`'s
+    `NewNotificationService` "build worker pool" error wrap
+    (`NewWorkerPool` only errors on a nil `Handler`, never passed here) and
+    `payloadvalidator.go`'s `EstimateSize` `json.Marshal`-failure fallback
+    (`shape` is built only from `string`/`map[string]string`, which cannot
+    fail to marshal).
+  - **Comment pass**: fixed real drift, not just gaps — `docs.go` and
+    `errors.go` both still referenced GORM (`gorm.ErrRecordNotFound` as an
+    example native error, "GORM+the Postgres driver" in the package doc)
+    from before the mid-Stage-6 pivot to pgx/v5+sqlc; there is no GORM
+    dependency in `go.mod` at all. `logger.go`'s `Logger` doc comment
+    "Example:" block showed `grnoti.WithLogger(logger)`, a functional-
+    options API that was never built (`NewNotificationService` takes a
+    `ServiceDeps` struct with a `Logger` field) — fixed the example.
+    `topicrouter.go`'s `resolveTokensForEvent` doc misattributed the
+    Android-fallback convention to "service.go's own convention" when it
+    only lives in `dispatcher.fcm.go`. Added missing per-field comments to
+    `types.go`'s `ServiceConfig`/`DispatchResult` (previously asymmetric —
+    some fields documented, others not, in the same struct) and
+    per-value comments to the `Priority`/`Platform`/`NotificationCategory`/
+    `CircuitState` const blocks, matching `DLQStatus`'s existing
+    per-value-documented block. Added comments explaining the *why* (not a
+    restatement) to non-trivial previously-uncommented unexported helpers:
+    `circuitbreaker.go`'s `beforeRequest`/`afterRequest` (the actual
+    Closed/Open/HalfOpen transition logic, including why the Open→HalfOpen
+    `fallthrough` exists), `workerpool.go`'s `worker` (the per-goroutine
+    dispatch loop's two exit conditions), and `dispatcher.fcm.go`'s
+    `buildAndroidConfig`/`buildAPNSConfig`/`buildWebpushConfig` (why each
+    platform carries `DeepLink`/`Actions`/`Category` differently — free-form
+    `Data` map vs. `CustomData` vs. first-class fields) and
+    `sendPlatformBatches`. Deliberately did *not* add comments to the
+    dozens of unexported concrete-type methods that merely satisfy an
+    already-documented exported interface method (e.g.
+    `postgresTokenStore.SaveToken`) — confirmed this is an intentional,
+    consistently-applied convention across all 33 files, not an oversight,
+    and matching it avoids restating what the interface doc already covers.
+  - `docs.go` was already created (not net-new, despite the original
+    phrasing) — fixed in place per the GORM correction above, plus one
+    clause noting `internal/postgresdb` as the (unexported, non-public-API)
+    exception to "no subpackages."
+  - **Coverage 83.1% → 95.0-95.1%**, verified via three consecutive fresh
+    `go test -count=1 -race -cover .` runs. Closed via, roughly in this
+    order: trivial direct-call tests for previously-0%-covered simple
+    methods (`String()`, `Default*Config()`, delegating methods, etc.);
+    one table-driven "after Close, every method returns `ErrClosed`" test
+    per store, closing a systemic gap where only one or two methods per
+    backend had ever been checked post-`Close`; error/edge-case branches
+    reachable with the existing real local infra (bad DSN/URI, empty
+    required fields, corrupt/closed `grcache` cache entries, malformed
+    `text/template` syntax); and small, targeted extensions to existing
+    test doubles (`stubTokenStore.markInvalidErr`, an error-injectable
+    `countingRateLimiter.waitErr`, a couple of new one-off stubs) rather
+    than new test infrastructure. Two techniques worth recording since
+    they generalize to any future Postgres/Mongo-backed method needing an
+    error branch with no fault-injection framework in place: **(a)** an
+    already-canceled `context.Context` reliably fails a real query against
+    both a healthy pgx pool and a healthy Mongo client — verified directly
+    (`context canceled` / `server selection error: context canceled`)
+    before relying on it, and used throughout to cover every backend's
+    generic "backend unavailable" wrap branch; **(b)** a `JSONB` column
+    rejects syntactically-invalid JSON at insert time, so triggering a row
+    decoder's `json.Unmarshal` error branch (`dlqRowToDomain`,
+    `preferencesRowToDomain`, `experimentRowToDomain`) requires inserting
+    *valid* JSON of the *wrong shape* via a raw SQL `INSERT` (e.g. a JSON
+    string where an object is expected) — a plain malformed-syntax insert
+    can never reach that branch at all.
+  - **Explicitly left uncovered, documented rather than silently skipped**
+    (disproportionate new fault-injection infrastructure for the value, or
+    genuinely unreachable): Kafka's deep consumer-group-session races in
+    `Start`/`WaitReady` and the `consumerGroup.Close()`/`producer.Close()`
+    error branches (would need a fake sarama consumer-group/producer);
+    `sendBatchWithRetry`'s ctx-canceled-mid-backoff-wait branch (a precise
+    timing race); `dlq.mongo.go`'s generic mid-loop claim error (needs
+    Mongo fault injection, distinct from the empty-URI/Database and
+    canceled-context branches that were covered).
+  - `Makefile`'s `COVERAGE_MIN` raised from 70 to 90 — a safe floor a few
+    points under the ~95% actual, not equal to it, so a small future dip
+    doesn't immediately fail `make coverage-check`.
+  - `golangci-lint run` still reports 0 issues after all of the above; `go
+    build`/`go vet`/`gofmt -l` all clean.

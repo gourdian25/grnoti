@@ -31,9 +31,9 @@ func (t TopicTarget) GetTopicName() string     { return t.Topic }
 func (t TopicTarget) GetTokens() []DeviceToken { return nil }
 
 // resolveTokensForEvent resolves event's recipient device tokens: direct
-// tokens embedded in the event take precedence (matching service.go's
-// "default to Android for an unset platform" convention, see
-// dispatcher.fcm.go), then an authenticated user's tokens via tokenStore,
+// tokens embedded in the event take precedence (matching dispatcher.fcm.go's
+// own "default to Android for an unset platform" convention), then an
+// authenticated user's tokens via tokenStore,
 // then an anonymous visitor's. Shared by NotificationService's own
 // resolution and every TopicRouter's token-fallback branch below — a fix
 // found while wiring Stage 12's full pipeline: eventTypeTopicRouter and

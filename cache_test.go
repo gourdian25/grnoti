@@ -74,6 +74,22 @@ func TestCacheIdempotencyStore_Close_DoesNotCloseSharedCache(t *testing.T) {
 	}
 }
 
+func TestCacheIdempotencyStore_ClosedCacheErrors(t *testing.T) {
+	cache := newTestCache(t)
+	if err := cache.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	store := NewCacheIdempotencyStore(cache)
+	ctx := context.Background()
+
+	if _, err := store.IsProcessed(ctx, "evt-1"); err == nil {
+		t.Fatal("IsProcessed on a closed cache = nil error, want non-nil")
+	}
+	if err := store.MarkProcessed(ctx, "evt-1", time.Hour); err == nil {
+		t.Fatal("MarkProcessed on a closed cache = nil error, want non-nil")
+	}
+}
+
 type stubDurablePreferencesStore struct {
 	prefs  map[string]*NotificationPreferences
 	gets   int
@@ -165,6 +181,93 @@ func TestCachedPreferencesStore_NotFoundPropagates(t *testing.T) {
 	}
 }
 
+func TestCachedPreferencesStore_IsEventTypeEnabled(t *testing.T) {
+	durable := newStubDurablePreferencesStore()
+	_ = durable.SavePreferences(context.Background(), &NotificationPreferences{
+		UserID: "u1", GlobalEnabled: true, EventTypeSettings: map[EventType]bool{EventTypeGenericMarketing: false},
+	})
+	store := NewCachedPreferencesStore(durable, newTestCache(t), time.Hour, nil)
+	ctx := context.Background()
+
+	enabled, err := store.IsEventTypeEnabled(ctx, "u1", EventTypeGenericMarketing)
+	if err != nil || enabled {
+		t.Fatalf("IsEventTypeEnabled(opted out) = (%v, %v), want (false, nil)", enabled, err)
+	}
+
+	enabled, err = store.IsEventTypeEnabled(ctx, "u1", EventTypeSystemAlert)
+	if err != nil || !enabled {
+		t.Fatalf("IsEventTypeEnabled(unconfigured type) = (%v, %v), want (true, nil)", enabled, err)
+	}
+}
+
+func TestCachedPreferencesStore_IsEventTypeEnabled_UnconfiguredUser(t *testing.T) {
+	store := NewCachedPreferencesStore(newStubDurablePreferencesStore(), newTestCache(t), time.Hour, nil)
+	enabled, err := store.IsEventTypeEnabled(context.Background(), "never-seen", EventTypeSystemAlert)
+	if err != nil || !enabled {
+		t.Fatalf("IsEventTypeEnabled(unconfigured user) = (%v, %v), want (true, nil)", enabled, err)
+	}
+}
+
+func TestCachedPreferencesStore_GetPreferences_CorruptCacheEntryFallsBackToDurable(t *testing.T) {
+	durable := newStubDurablePreferencesStore()
+	_ = durable.SavePreferences(context.Background(), &NotificationPreferences{UserID: "u1", GlobalEnabled: true})
+	cache := newTestCache(t)
+	ctx := context.Background()
+	if err := cache.Set(ctx, preferencesCacheKey("u1"), []byte("not json"), time.Hour); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	store := NewCachedPreferencesStore(durable, cache, time.Hour, nil)
+	got, err := store.GetPreferences(ctx, "u1")
+	if err != nil {
+		t.Fatalf("GetPreferences(corrupt cache entry): %v", err)
+	}
+	if !got.GlobalEnabled {
+		t.Fatalf("GetPreferences() = %+v, want the durable store's value after falling back", got)
+	}
+	if durable.gets != 1 {
+		t.Fatalf("durable gets = %d, want 1 (fell back to durable store)", durable.gets)
+	}
+}
+
+func TestCachedPreferencesStore_ClosedCacheFallsBackToDurable(t *testing.T) {
+	durable := newStubDurablePreferencesStore()
+	_ = durable.SavePreferences(context.Background(), &NotificationPreferences{UserID: "u1", GlobalEnabled: true})
+	cache := newTestCache(t)
+	if err := cache.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	store := NewCachedPreferencesStore(durable, cache, time.Hour, nil)
+	got, err := store.GetPreferences(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("GetPreferences with a closed cache: %v, want nil (falls back to durable store)", err)
+	}
+	if !got.GlobalEnabled {
+		t.Fatalf("GetPreferences() = %+v, want the durable store's value", got)
+	}
+}
+
+func TestCachedPreferencesStore_SavePreferences_InvalidationFailureIsWarningOnly(t *testing.T) {
+	durable := newStubDurablePreferencesStore()
+	cache := newTestCache(t)
+	if err := cache.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	store := NewCachedPreferencesStore(durable, cache, time.Hour, nil)
+	// The durable write must still succeed and SavePreferences must still
+	// return nil even though the (closed) cache's InvalidateTag call fails
+	// — a cache invalidation failure degrades to a stale cache entry, not
+	// an error surfaced to the caller whose durable write already succeeded.
+	if err := store.SavePreferences(context.Background(), &NotificationPreferences{UserID: "u1", GlobalEnabled: true}); err != nil {
+		t.Fatalf("SavePreferences: %v, want nil despite the cache invalidation failure", err)
+	}
+	if _, ok := durable.prefs["u1"]; !ok {
+		t.Fatal("SavePreferences did not persist to the durable store")
+	}
+}
+
 func TestCachedPreferencesStore_Close_ClosesDurableNotCache(t *testing.T) {
 	durable := newStubDurablePreferencesStore()
 	cache := newTestCache(t)
@@ -221,6 +324,68 @@ func TestCacheBackedExperimentEngine_NoVariants(t *testing.T) {
 	_, err := engine.AssignVariant(context.Background(), "user-1", &Experiment{ID: "empty"})
 	if err != ErrExperimentHasNoVariants {
 		t.Fatalf("AssignVariant(no variants) error = %v, want ErrExperimentHasNoVariants", err)
+	}
+}
+
+func TestCacheBackedExperimentEngine_TrackImpression(t *testing.T) {
+	engine := NewCacheBackedExperimentEngine(newTestCache(t), nil, nil, nil)
+	if err := engine.TrackImpression(context.Background(), "user-1", "exp-1", "control"); err != nil {
+		t.Fatalf("TrackImpression with no publisher: %v", err)
+	}
+
+	pub := &stubAnalyticsPublisher{}
+	engine = NewCacheBackedExperimentEngine(newTestCache(t), pub, nil, nil)
+	if err := engine.TrackImpression(context.Background(), "user-1", "exp-1", "control"); err != nil {
+		t.Fatalf("TrackImpression: %v", err)
+	}
+	if pub.impressions != 1 {
+		t.Fatalf("impressions = %d, want 1", pub.impressions)
+	}
+}
+
+func TestCacheBackedExperimentEngine_TrackConversion(t *testing.T) {
+	engine := NewCacheBackedExperimentEngine(newTestCache(t), nil, nil, nil)
+	if err := engine.TrackConversion(context.Background(), "user-1", "exp-1"); err != nil {
+		t.Fatalf("TrackConversion with no publisher: %v", err)
+	}
+
+	pub := &stubAnalyticsPublisher{}
+	engine = NewCacheBackedExperimentEngine(newTestCache(t), pub, nil, nil)
+	if err := engine.TrackConversion(context.Background(), "user-1", "exp-1"); err != nil {
+		t.Fatalf("TrackConversion: %v", err)
+	}
+	if pub.conversions != 1 {
+		t.Fatalf("conversions = %d, want 1", pub.conversions)
+	}
+}
+
+func TestCacheBackedExperimentEngine_GetVariant_CorruptCacheEntry(t *testing.T) {
+	cache := newTestCache(t)
+	ctx := context.Background()
+	if err := cache.Set(ctx, assignmentKey("user-1", "exp-1"), []byte("not json"), 0); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	engine := NewCacheBackedExperimentEngine(cache, nil, nil, nil)
+	got, err := engine.GetVariant(ctx, "user-1", "exp-1")
+	if err != nil {
+		t.Fatalf("GetVariant(corrupt entry) error = %v, want nil (treated as unassigned)", err)
+	}
+	if got != nil {
+		t.Fatalf("GetVariant(corrupt entry) = %+v, want nil", got)
+	}
+}
+
+func TestCacheBackedExperimentEngine_GetVariant_ClosedCacheError(t *testing.T) {
+	cache := newTestCache(t)
+	if err := cache.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	engine := NewCacheBackedExperimentEngine(cache, nil, nil, nil)
+	_, err := engine.GetVariant(context.Background(), "user-1", "exp-1")
+	if err == nil {
+		t.Fatal("GetVariant on a closed cache = nil error, want a generic cache error")
 	}
 }
 

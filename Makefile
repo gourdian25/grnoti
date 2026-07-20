@@ -4,7 +4,7 @@
 
 GO := go
 MODULE := github.com/gourdian25/grnoti
-COVERAGE_MIN := 70
+COVERAGE_MIN := 90
 VERSION ?=
 
 help:

@@ -76,6 +76,25 @@ func TestRedisRateLimiter_ExhaustsBucketThenRefuses(t *testing.T) {
 	}
 }
 
+func TestRedisRateLimiter_Allow_CanceledContext(t *testing.T) {
+	rl := newTestRedisRateLimiter(t, 5, 5)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := rl.Allow(ctx); err == nil {
+		t.Fatal("Allow(canceled ctx) = nil error, want non-nil")
+	}
+}
+
+func TestRedisRateLimiter_UpdateLimit_InvalidConfig(t *testing.T) {
+	rl := newTestRedisRateLimiter(t, 5, 5)
+	if err := rl.UpdateLimit(0, 5); err == nil {
+		t.Fatal("UpdateLimit(rps=0) = nil error, want non-nil")
+	}
+	if err := rl.UpdateLimit(10, 5); err == nil {
+		t.Fatal("UpdateLimit(burst<rps) = nil error, want non-nil")
+	}
+}
+
 func TestRedisRateLimiter_InvalidConfig(t *testing.T) {
 	if _, err := NewRedisRateLimiter(RedisRateLimiterConfig{Addr: testRedisAddr, RequestsPerSecond: 0, BurstSize: 10}); err == nil {
 		t.Fatal("NewRedisRateLimiter(rps=0) = nil error, want non-nil")
@@ -151,6 +170,28 @@ func TestRedisRateLimiter_Close_Idempotent(t *testing.T) {
 	}
 	if _, err := rl.Allow(context.Background()); err != ErrClosed {
 		t.Fatalf("Allow after Close error = %v, want ErrClosed", err)
+	}
+}
+
+func TestRedisRateLimiter_AfterClose_EveryMethodReturnsErrClosed(t *testing.T) {
+	rl := newTestRedisRateLimiter(t, 5, 5)
+	if err := rl.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	ctx := context.Background()
+
+	if err := rl.Wait(ctx); err != ErrClosed {
+		t.Errorf("Wait after Close = %v, want ErrClosed", err)
+	}
+	if _, err := rl.GetStats(ctx); err != ErrClosed {
+		t.Errorf("GetStats after Close = %v, want ErrClosed", err)
+	}
+	// Regression test for the real bug found in this hardening pass:
+	// UpdateLimit didn't check r.closed at all, unlike every sibling
+	// method, so it silently mutated in-memory rate/burst fields after
+	// Close instead of failing.
+	if err := rl.UpdateLimit(10, 10); err != ErrClosed {
+		t.Errorf("UpdateLimit after Close = %v, want ErrClosed", err)
 	}
 }
 

@@ -19,7 +19,8 @@ package grnoti
 //	import "github.com/gourdian25/grlog"
 //
 //	logger := grlog.NewDefaultLogger()
-//	svc, err := grnoti.NewNotificationService(deps, grnoti.WithLogger(logger))
+//	deps.Logger = logger
+//	svc, err := grnoti.NewNotificationService(deps)
 type Logger interface {
 	Infof(format string, args ...interface{})
 	Warnf(format string, args ...interface{})

@@ -29,6 +29,34 @@ func newTestPostgresDLQHandler(t *testing.T, maxRetries int, retryDelay time.Dur
 	return h
 }
 
+func TestNewPostgresDLQHandler_DefaultsMaxRetries(t *testing.T) {
+	h := newTestPostgresDLQHandler(t, 0, 0).(*postgresDLQHandler)
+	if h.maxRetries != 3 {
+		t.Fatalf("NewPostgresDLQHandler(MaxRetries<=0).maxRetries = %d, want 3 (the default)", h.maxRetries)
+	}
+}
+
+func TestPostgresDLQHandler_ClaimRetryableEvents_DefaultsLimit(t *testing.T) {
+	h := newTestPostgresDLQHandler(t, 3, 0)
+	ctx := context.Background()
+	if err := h.PublishToDLQ(ctx, Event{EventID: "pge-limit"}, "boom"); err != nil {
+		t.Fatalf("PublishToDLQ: %v", err)
+	}
+	claimed, err := h.ClaimRetryableEvents(ctx, 0) // <=0 -> defaults to 10
+	if err != nil {
+		t.Fatalf("ClaimRetryableEvents: %v", err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("ClaimRetryableEvents(limit=0) = %v, want 1 claimed event (default limit applied)", claimed)
+	}
+}
+
+func TestNewPostgresDLQHandler_ConnectError(t *testing.T) {
+	if _, err := NewPostgresDLQHandler(PostgresDLQHandlerConfig{}); err == nil {
+		t.Fatal("NewPostgresDLQHandler(empty DSN) = nil error, want non-nil")
+	}
+}
+
 func TestPostgresDLQHandler_PublishAndClaim(t *testing.T) {
 	h := newTestPostgresDLQHandler(t, 3, 0)
 	ctx := context.Background()
@@ -219,6 +247,30 @@ func TestPostgresDLQHandler_ConcurrentClaimNeverDoubleClaims(t *testing.T) {
 	}
 }
 
+// TestDlqRowToDomain_MalformedEventData inserts a row whose event_data is
+// valid JSON (JSONB guarantees that) but not the expected shape (an array,
+// not an Event-compatible object) — exercising dlqRowToDomain's
+// json.Unmarshal error branch, unreachable via a plain malformed-syntax
+// insert since Postgres rejects non-JSON text at the JSONB column level.
+func TestDlqRowToDomain_MalformedEventData(t *testing.T) {
+	h := newTestPostgresDLQHandler(t, 3, 0)
+	hh, ok := h.(*postgresDLQHandler)
+	if !ok {
+		t.Fatal("handler is not *postgresDLQHandler")
+	}
+	ctx := context.Background()
+	_, err := hh.pool.Exec(ctx, `INSERT INTO grnoti_dlq
+		(event_id, event_data, failure_reason, max_retries, first_failure_at, last_attempt_at, next_retry_at, status)
+		VALUES ($1, '[1,2,3]', 'boom', 3, now(), now(), now(), 'pending')`, "pge-malformed")
+	if err != nil {
+		t.Fatalf("raw insert: %v", err)
+	}
+
+	if _, err := h.GetEventByID(ctx, "pge-malformed"); err == nil {
+		t.Fatal("GetEventByID(malformed event_data) = nil error, want non-nil")
+	}
+}
+
 func TestPostgresDLQHandler_Close_Idempotent(t *testing.T) {
 	h := newTestPostgresDLQHandler(t, 3, 0)
 	if err := h.Close(); err != nil {
@@ -229,5 +281,52 @@ func TestPostgresDLQHandler_Close_Idempotent(t *testing.T) {
 	}
 	if _, err := h.GetEventByID(context.Background(), "pge1"); err != ErrClosed {
 		t.Fatalf("GetEventByID after Close error = %v, want ErrClosed", err)
+	}
+}
+
+// TestPostgresDLQHandler_GenericQueryError uses an already-canceled
+// context to force a real query-level error — see the analogous
+// tokenstore.postgres_test.go comment for why this reaches a branch fault
+// injection would otherwise require.
+func TestPostgresDLQHandler_GenericQueryError(t *testing.T) {
+	h := newTestPostgresDLQHandler(t, 3, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := h.PublishToDLQ(ctx, Event{EventID: "e1"}, "boom"); err == nil {
+		t.Error("PublishToDLQ(canceled ctx) = nil error, want non-nil")
+	}
+	if _, err := h.ClaimRetryableEvents(ctx, 10); err == nil {
+		t.Error("ClaimRetryableEvents(canceled ctx) = nil error, want non-nil")
+	}
+	if _, err := h.GetEventByID(ctx, "e1"); err == nil {
+		t.Error("GetEventByID(canceled ctx) = nil error, want non-nil")
+	}
+	if _, err := h.PurgeExpiredEvents(ctx, time.Hour); err == nil {
+		t.Error("PurgeExpiredEvents(canceled ctx) = nil error, want non-nil")
+	}
+	if err := h.MarkRetried(ctx, "e1", true, nil); err == nil {
+		t.Error("MarkRetried(canceled ctx) = nil error, want non-nil")
+	}
+}
+
+func TestPostgresDLQHandler_AfterClose_EveryMethodReturnsErrClosed(t *testing.T) {
+	h := newTestPostgresDLQHandler(t, 3, 0)
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	ctx := context.Background()
+
+	if err := h.PublishToDLQ(ctx, Event{EventID: "pge1"}, "boom"); err != ErrClosed {
+		t.Errorf("PublishToDLQ after Close = %v, want ErrClosed", err)
+	}
+	if _, err := h.ClaimRetryableEvents(ctx, 10); err != ErrClosed {
+		t.Errorf("ClaimRetryableEvents after Close = %v, want ErrClosed", err)
+	}
+	if err := h.MarkRetried(ctx, "pge1", true, nil); err != ErrClosed {
+		t.Errorf("MarkRetried after Close = %v, want ErrClosed", err)
+	}
+	if _, err := h.PurgeExpiredEvents(ctx, time.Hour); err != ErrClosed {
+		t.Errorf("PurgeExpiredEvents after Close = %v, want ErrClosed", err)
 	}
 }

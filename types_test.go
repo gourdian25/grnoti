@@ -2,7 +2,10 @@
 
 package grnoti
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestEvent_Validate(t *testing.T) {
 	base := Event{
@@ -103,6 +106,37 @@ func TestPlatform_IsValid(t *testing.T) {
 	}
 	if Platform("blackberry").IsValid() {
 		t.Error(`Platform("blackberry").IsValid() = true, want false`)
+	}
+}
+
+func TestPriority_String(t *testing.T) {
+	if PriorityHigh.String() != "high" {
+		t.Fatalf("PriorityHigh.String() = %q, want %q", PriorityHigh.String(), "high")
+	}
+}
+
+func TestPlatform_String(t *testing.T) {
+	if PlatformIOS.String() != "ios" {
+		t.Fatalf("PlatformIOS.String() = %q, want %q", PlatformIOS.String(), "ios")
+	}
+}
+
+func TestDefaultServiceConfig(t *testing.T) {
+	cfg := DefaultServiceConfig()
+	if cfg.IdempotencyTTL != 24*time.Hour {
+		t.Fatalf("DefaultServiceConfig().IdempotencyTTL = %v, want 24h", cfg.IdempotencyTTL)
+	}
+	if cfg.MaxTokensPerBatch != 500 {
+		t.Fatalf("DefaultServiceConfig().MaxTokensPerBatch = %d, want 500", cfg.MaxTokensPerBatch)
+	}
+	if !cfg.EnableMetrics {
+		t.Fatal("DefaultServiceConfig().EnableMetrics = false, want true")
+	}
+	if !cfg.EnableDLQ {
+		t.Fatal("DefaultServiceConfig().EnableDLQ = false, want true")
+	}
+	if cfg.EnableTopicRouting || cfg.EnableBackpressure || cfg.EnableABTesting {
+		t.Fatalf("DefaultServiceConfig() = %+v, want every other Enable* flag false (opt-in)", cfg)
 	}
 }
 

@@ -302,6 +302,9 @@ func (r *redisRateLimiter) GetStats(ctx context.Context) (RateLimiterStats, erro
 // whatever they were last configured with until they call UpdateLimit too
 // — there is no cross-process config propagation.
 func (r *redisRateLimiter) UpdateLimit(requestsPerSecond, burstSize int) error {
+	if r.closed.Load() {
+		return ErrClosed
+	}
 	if requestsPerSecond <= 0 {
 		return fmt.Errorf("grnoti: requestsPerSecond must be > 0")
 	}

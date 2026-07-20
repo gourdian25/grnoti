@@ -8,9 +8,16 @@ import "time"
 type Priority string
 
 const (
-	PriorityHigh   Priority = "high"
+	// PriorityHigh requests immediate delivery (FCM: high priority — wakes
+	// a doze-mode Android device, bypasses APNs' throttling).
+	PriorityHigh Priority = "high"
+	// PriorityNormal is standard, battery-friendly delivery.
 	PriorityNormal Priority = "normal"
-	PriorityLow    Priority = "low"
+	// PriorityLow is deliberately deprioritized (e.g. marketing content).
+	// dispatcher.fcm.go's Android/APNS config only branch on == PriorityHigh
+	// (so Low behaves like Normal there), but Webpush maps it to a distinct
+	// "Urgency: low" header — see buildWebpushConfig.
+	PriorityLow Priority = "low"
 )
 
 // String returns the underlying string value.
@@ -30,6 +37,9 @@ func (p Priority) IsValid() bool {
 type Platform string
 
 const (
+	// PlatformAndroid is also the fallback platform resolveTokensForEvent
+	// (topicrouter.go) assigns to direct tokens supplied on an Event — bare
+	// strings with no platform information of their own.
 	PlatformAndroid Platform = "android"
 	PlatformIOS     Platform = "ios"
 	PlatformWeb     Platform = "web"
@@ -54,10 +64,17 @@ func (p Platform) IsValid() bool {
 type NotificationCategory string
 
 const (
+	// CategoryTransactional covers account/security/order-status content a
+	// user generally cannot opt out of independent of other categories.
 	CategoryTransactional NotificationCategory = "transactional"
-	CategoryMarketing     NotificationCategory = "marketing"
-	CategorySocial        NotificationCategory = "social"
-	CategoryAlert         NotificationCategory = "alert"
+	// CategoryMarketing covers promotional content — the category users
+	// most commonly disable via NotificationPreferences.EventTypeSettings.
+	CategoryMarketing NotificationCategory = "marketing"
+	// CategorySocial covers social-graph activity (likes, follows, mentions).
+	CategorySocial NotificationCategory = "social"
+	// CategoryAlert covers system/operational alerts (see the
+	// EventTypeSystemAlert default template in templateengine.go).
+	CategoryAlert NotificationCategory = "alert"
 )
 
 // Event is the unit of work a NotificationService processes: a single
@@ -161,11 +178,26 @@ type Message struct {
 
 // DispatchResult summarizes the outcome of a PushDispatcher.Send call.
 type DispatchResult struct {
-	SuccessCount    int
-	FailureCount    int
-	InvalidTokens   []string
+	// SuccessCount is how many recipients (tokens or, for a topic send, the
+	// single topic) were accepted for delivery.
+	SuccessCount int
+	// FailureCount is how many recipients failed, permanently or
+	// retryably — always >= len(InvalidTokens), since every invalid token
+	// is also counted as a failure.
+	FailureCount int
+	// InvalidTokens lists tokens FCM reported as permanently dead
+	// (unregistered/sender-mismatch) — the caller is expected to pass
+	// these to TokenStore.MarkInvalid rather than retry them.
+	InvalidTokens []string
+	// RetryableErrors counts failures classified as transient (see
+	// FCMErrorCode.IsRetryable) — a subset of FailureCount worth another
+	// attempt, as opposed to a permanent per-token failure already
+	// captured in InvalidTokens.
 	RetryableErrors int
-	Errors          []error
+	// Errors collects the individual per-batch/per-token errors behind
+	// FailureCount, for logging — see joinDispatchErrors for how
+	// NotificationService summarizes these into one DLQ failure reason.
+	Errors []error
 
 	// SuccessByPlatform/FailureByPlatform break SuccessCount/FailureCount
 	// down per Platform — populated by dispatcher.fcm.go's Send, which
@@ -328,8 +360,17 @@ type ExperimentAssignment struct {
 type CircuitState string
 
 const (
-	CircuitStateClosed   CircuitState = "closed"
-	CircuitStateOpen     CircuitState = "open"
+	// CircuitStateClosed is the normal state: requests pass through, and
+	// consecutive failures are counted toward MaxFailures.
+	CircuitStateClosed CircuitState = "closed"
+	// CircuitStateOpen rejects every request immediately (without
+	// attempting them) until Timeout elapses, then transitions to
+	// CircuitStateHalfOpen.
+	CircuitStateOpen CircuitState = "open"
+	// CircuitStateHalfOpen allows up to MaxHalfOpenRequests trial requests
+	// through to test whether the failing dependency has recovered: the
+	// first trial failure trips it straight back to CircuitStateOpen, the
+	// first trial success closes it.
 	CircuitStateHalfOpen CircuitState = "half_open"
 )
 
@@ -394,14 +435,38 @@ type WorkerPoolStats struct {
 // and backward compatibility" — matching the reference implementation's own
 // convention) except where DefaultServiceConfig says otherwise.
 type ServiceConfig struct {
-	IdempotencyTTL           time.Duration
-	MaxTokensPerBatch        int
-	EnableMetrics            bool
-	SkipInvalidEvents        bool
+	// IdempotencyTTL is how long a processed event's ID is remembered by
+	// IdempotencyStore before it could be reprocessed if redelivered again.
+	IdempotencyTTL time.Duration
+	// MaxTokensPerBatch is the batch size dispatchToTokens splits a token
+	// list into when EnforceBatching is set. Distinct from (and composes
+	// with) dispatcher.fcm.go's own fixed FCMMaxBatchSize internal batching.
+	MaxTokensPerBatch int
+	// EnableMetrics gates whether processEvent/recordMetrics call the
+	// configured Metrics collector at all.
+	EnableMetrics bool
+	// SkipInvalidEvents, if set, makes processEvent report a failed
+	// Event.Validate() as a skip (ProcessingResult.Skipped, no error
+	// returned) instead of propagating the validation error to the caller.
+	SkipInvalidEvents bool
+	// EnableTokenDeduplication makes dispatchToTokens deduplicate the
+	// resolved token list (via batchSplitter.Deduplicate) before sending,
+	// in case TokenStore ever returns the same token twice.
 	EnableTokenDeduplication bool
-	EnforceBatching          bool
-	EnablePreferencesFilter  bool
-	EnableTopicRouting       bool
+	// EnforceBatching makes dispatchToTokens pre-split a resolved token
+	// list into MaxTokensPerBatch-sized calls to the dispatcher, merging
+	// the per-batch DispatchResults — off by default, in which case the
+	// entire token list is passed to the dispatcher in one call.
+	EnforceBatching bool
+	// EnablePreferencesFilter gates whether processEvent consults
+	// ServiceDeps.PreferencesFilter for authenticated events at all; a nil
+	// PreferencesFilter always skips this check regardless of the flag.
+	EnablePreferencesFilter bool
+	// EnableTopicRouting gates whether processEvent consults
+	// ServiceDeps.TopicRouter to resolve a topic/token target instead of
+	// always resolving tokens directly; a nil TopicRouter always skips
+	// this regardless of the flag.
+	EnableTopicRouting bool
 	// EnableRichPush, EnableLocalization, EnableABTesting are
 	// composition-time flags, not read anywhere in
 	// notificationService.processEvent (service.go) directly — rich-push

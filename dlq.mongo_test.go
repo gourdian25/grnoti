@@ -24,6 +24,49 @@ func newTestMongoDLQHandler(t *testing.T, retryDelay time.Duration) DLQHandler {
 	return h
 }
 
+func TestNewMongoDLQHandler_DefaultsMaxRetries(t *testing.T) {
+	h, err := NewMongoDLQHandler(MongoDLQHandlerConfig{
+		URI: testMongoURI, Database: "grnoti_test", CollectionName: fmt.Sprintf("dlq_%d", time.Now().UnixNano()),
+		MaxRetries: 0,
+	})
+	if err != nil {
+		t.Skipf("MongoDB not available: %v", err)
+	}
+	defer h.Close()
+	if got := h.(*mongoDLQHandler).maxRetries; got != 3 {
+		t.Fatalf("NewMongoDLQHandler(MaxRetries<=0).maxRetries = %d, want 3 (the default)", got)
+	}
+}
+
+func TestMongoDLQHandler_ClaimRetryableEvents_DefaultsLimit(t *testing.T) {
+	h := newTestMongoDLQHandler(t, 0)
+	ctx := context.Background()
+	if err := h.PublishToDLQ(ctx, Event{EventID: "e-limit"}, "boom"); err != nil {
+		t.Fatalf("PublishToDLQ: %v", err)
+	}
+	claimed, err := h.ClaimRetryableEvents(ctx, 0) // <=0 -> defaults to 10
+	if err != nil {
+		t.Fatalf("ClaimRetryableEvents: %v", err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("ClaimRetryableEvents(limit=0) = %v, want 1 claimed event (default limit applied)", claimed)
+	}
+}
+
+func TestNewMongoDLQHandler_EmptyURI(t *testing.T) {
+	_, err := NewMongoDLQHandler(MongoDLQHandlerConfig{Database: "grnoti_test"})
+	if err == nil {
+		t.Fatal("NewMongoDLQHandler(empty URI) = nil error, want non-nil")
+	}
+}
+
+func TestNewMongoDLQHandler_EmptyDatabase(t *testing.T) {
+	_, err := NewMongoDLQHandler(MongoDLQHandlerConfig{URI: testMongoURI})
+	if err == nil {
+		t.Fatal("NewMongoDLQHandler(empty Database) = nil error, want non-nil")
+	}
+}
+
 func TestMongoDLQHandler_PublishAndClaim(t *testing.T) {
 	h := newTestMongoDLQHandler(t, 0)
 	ctx := context.Background()
@@ -223,5 +266,52 @@ func TestMongoDLQHandler_Close_Idempotent(t *testing.T) {
 	}
 	if _, err := h.GetEventByID(context.Background(), "e1"); err != ErrClosed {
 		t.Fatalf("GetEventByID after Close error = %v, want ErrClosed", err)
+	}
+}
+
+// TestMongoDLQHandler_GenericQueryError uses an already-canceled context
+// to force a real query-level error — see the analogous
+// tokenstore.mongo_test.go comment for why this reaches a branch fault
+// injection would otherwise require.
+func TestMongoDLQHandler_GenericQueryError(t *testing.T) {
+	h := newTestMongoDLQHandler(t, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := h.PublishToDLQ(ctx, Event{EventID: "e1"}, "boom"); err == nil {
+		t.Error("PublishToDLQ(canceled ctx) = nil error, want non-nil")
+	}
+	if _, err := h.ClaimRetryableEvents(ctx, 10); err == nil {
+		t.Error("ClaimRetryableEvents(canceled ctx) = nil error, want non-nil")
+	}
+	if _, err := h.GetEventByID(ctx, "e1"); err == nil {
+		t.Error("GetEventByID(canceled ctx) = nil error, want non-nil")
+	}
+	if _, err := h.PurgeExpiredEvents(ctx, time.Hour); err == nil {
+		t.Error("PurgeExpiredEvents(canceled ctx) = nil error, want non-nil")
+	}
+	if err := h.MarkRetried(ctx, "e1", true, nil); err == nil {
+		t.Error("MarkRetried(canceled ctx) = nil error, want non-nil")
+	}
+}
+
+func TestMongoDLQHandler_AfterClose_EveryMethodReturnsErrClosed(t *testing.T) {
+	h := newTestMongoDLQHandler(t, 0)
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	ctx := context.Background()
+
+	if err := h.PublishToDLQ(ctx, Event{EventID: "e1"}, "boom"); err != ErrClosed {
+		t.Errorf("PublishToDLQ after Close = %v, want ErrClosed", err)
+	}
+	if _, err := h.ClaimRetryableEvents(ctx, 10); err != ErrClosed {
+		t.Errorf("ClaimRetryableEvents after Close = %v, want ErrClosed", err)
+	}
+	if err := h.MarkRetried(ctx, "e1", true, nil); err != ErrClosed {
+		t.Errorf("MarkRetried after Close = %v, want ErrClosed", err)
+	}
+	if _, err := h.PurgeExpiredEvents(ctx, time.Hour); err != ErrClosed {
+		t.Errorf("PurgeExpiredEvents after Close = %v, want ErrClosed", err)
 	}
 }

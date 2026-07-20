@@ -55,6 +55,40 @@ func rawSaramaProducer(t *testing.T) sarama.SyncProducer {
 
 // --- producer.kafka.go ---
 
+func TestNewKafkaAnalyticsPublisher_EmptyBrokers(t *testing.T) {
+	if _, err := NewKafkaAnalyticsPublisher(KafkaAnalyticsPublisherConfig{}); err == nil {
+		t.Fatal("NewKafkaAnalyticsPublisher(empty Brokers) = nil error, want non-nil")
+	}
+}
+
+func TestNewKafkaAnalyticsPublisher_UnreachableBroker(t *testing.T) {
+	_, err := NewKafkaAnalyticsPublisher(KafkaAnalyticsPublisherConfig{Brokers: []string{"127.0.0.1:1"}})
+	if err == nil {
+		t.Fatal("NewKafkaAnalyticsPublisher(unreachable broker) = nil error, want non-nil")
+	}
+}
+
+func TestNewKafkaEventConsumer_EmptyBrokers(t *testing.T) {
+	_, err := NewKafkaEventConsumer(KafkaConsumerConfig{GroupID: "g", Topics: []string{"t"}})
+	if err == nil {
+		t.Fatal("NewKafkaEventConsumer(empty Brokers) = nil error, want non-nil")
+	}
+}
+
+func TestNewKafkaEventConsumer_EmptyGroupID(t *testing.T) {
+	_, err := NewKafkaEventConsumer(KafkaConsumerConfig{Brokers: testKafkaBrokers, Topics: []string{"t"}})
+	if err == nil {
+		t.Fatal("NewKafkaEventConsumer(empty GroupID) = nil error, want non-nil")
+	}
+}
+
+func TestNewKafkaEventConsumer_EmptyTopics(t *testing.T) {
+	_, err := NewKafkaEventConsumer(KafkaConsumerConfig{Brokers: testKafkaBrokers, GroupID: "g"})
+	if err == nil {
+		t.Fatal("NewKafkaEventConsumer(empty Topics) = nil error, want non-nil")
+	}
+}
+
 func TestKafkaAnalyticsPublisher_PublishImpressionAndConversion(t *testing.T) {
 	impressionTopic := testKafkaTopic(t)
 	conversionTopic := testKafkaTopic(t)

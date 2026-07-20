@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -387,6 +388,103 @@ func TestProcessEvent_TopicRouting_SendsToTopicNotTokens(t *testing.T) {
 	}
 }
 
+// errorTopicRouter is a TopicRouter that always fails ResolveTarget — used
+// to exercise dispatch's TopicRouter-error branch.
+type errorTopicRouter struct{ err error }
+
+func (r errorTopicRouter) ResolveTarget(context.Context, Event) (NotificationTarget, error) {
+	return nil, r.err
+}
+
+// TestProcessEvent_TopicRouter_ResolveTargetError proves dispatch's
+// TopicRouter-error branch without asserting a top-level ProcessEvent
+// error: per processEvent's own documented contract (matching the
+// reference implementation), a dispatch-level error doesn't abort the
+// pipeline or propagate as an error — it's logged, and the event still
+// gets marked processed with a zero-valued DispatchResult.
+func TestProcessEvent_TopicRouter_ResolveTargetError(t *testing.T) {
+	deps := baseServiceDeps(t)
+	deps.TopicRouter = errorTopicRouter{err: errors.New("router boom")}
+	deps.Config.EnableTopicRouting = true
+	svc, _ := NewNotificationService(deps)
+	defer svc.Close()
+
+	result, err := svc.ProcessEvent(context.Background(), validEvent("e1"))
+	if err != nil {
+		t.Fatalf("ProcessEvent: %v, want nil (dispatch errors don't abort the pipeline)", err)
+	}
+	if result.DispatchResult.TotalCount() != 0 {
+		t.Fatalf("ProcessEvent().DispatchResult = %+v, want zero-valued after a TopicRouter error", result.DispatchResult)
+	}
+	if result.Skipped {
+		t.Fatal("ProcessEvent().Skipped = true, want false (a dispatch error is not a skip)")
+	}
+}
+
+func TestMarkInvalidTokens_LogsAndContinuesOnError(t *testing.T) {
+	deps := baseServiceDeps(t)
+	tokenStore := &stubTokenStore{markInvalidErr: errors.New("mark invalid boom")}
+	deps.TokenStore = tokenStore
+	deps.Dispatcher = &stubDispatcher{SendFunc: func(context.Context, []DeviceToken, Message) (DispatchResult, error) {
+		return DispatchResult{FailureCount: 1, InvalidTokens: []string{"bad-token"}}, nil
+	}}
+	svc, err := NewNotificationService(deps)
+	if err != nil {
+		t.Fatalf("NewNotificationService: %v", err)
+	}
+	defer svc.Close()
+
+	event := validEvent("e1")
+	event.DeviceTokens = []string{"bad-token"}
+	// MarkInvalid's error must be logged and swallowed, not propagated —
+	// ProcessEvent should still complete successfully.
+	if _, err := svc.ProcessEvent(context.Background(), event); err != nil {
+		t.Fatalf("ProcessEvent: %v", err)
+	}
+}
+
+// errorDLQHandler is a DLQHandler whose PublishToDLQ always fails — used to
+// exercise publishToDLQIfUnresolved's error-logging branch.
+type errorDLQHandler struct{ DLQHandler }
+
+func (errorDLQHandler) PublishToDLQ(context.Context, Event, string) error {
+	return errors.New("dlq publish boom")
+}
+
+func TestProcessEvent_PublishToDLQError_LogsAndContinues(t *testing.T) {
+	deps := baseServiceDeps(t)
+	_ = deps.TokenStore.SaveToken(context.Background(), DeviceToken{Token: "t1", UserID: "u1"})
+	deps.Dispatcher = &stubDispatcher{SendFunc: func(context.Context, []DeviceToken, Message) (DispatchResult, error) {
+		return DispatchResult{FailureCount: 1, Errors: []error{errors.New("fcm unavailable")}}, nil
+	}}
+	deps.DLQHandler = errorDLQHandler{}
+	deps.Config.EnableDLQ = true
+	svc, _ := NewNotificationService(deps)
+	defer svc.Close()
+
+	// PublishToDLQ's error must be logged and swallowed, not propagated.
+	if _, err := svc.ProcessEvent(context.Background(), validEvent("e1")); err != nil {
+		t.Fatalf("ProcessEvent: %v", err)
+	}
+}
+
+func TestJoinDispatchErrors(t *testing.T) {
+	if got := joinDispatchErrors(nil); got != "dispatch failed" {
+		t.Errorf("joinDispatchErrors(nil) = %q, want %q", got, "dispatch failed")
+	}
+	if got := joinDispatchErrors([]error{}); got != "dispatch failed" {
+		t.Errorf("joinDispatchErrors(empty) = %q, want %q", got, "dispatch failed")
+	}
+	single := joinDispatchErrors([]error{errors.New("boom")})
+	if single != "boom" {
+		t.Errorf("joinDispatchErrors(1 error) = %q, want %q", single, "boom")
+	}
+	multi := joinDispatchErrors([]error{errors.New("boom"), errors.New("bam"), errors.New("pow")})
+	if multi != "boom (and 2 more)" {
+		t.Errorf("joinDispatchErrors(3 errors) = %q, want %q", multi, "boom (and 2 more)")
+	}
+}
+
 // --- DLQ wiring (§3.6) ---
 
 func TestProcessEvent_UnresolvedFailure_PublishesToDLQ(t *testing.T) {
@@ -559,6 +657,33 @@ func TestProcessEvent_Metrics(t *testing.T) {
 	}
 }
 
+func TestProcessEvent_Metrics_RecordsFailuresByPlatform(t *testing.T) {
+	deps := baseServiceDeps(t)
+	_ = deps.TokenStore.SaveToken(context.Background(), DeviceToken{Token: "t1", UserID: "u1"})
+	m := &stubMetricsFull{}
+	deps.Metrics = m
+	deps.Config.EnableMetrics = true
+	deps.Dispatcher = &stubDispatcher{SendFunc: func(context.Context, []DeviceToken, Message) (DispatchResult, error) {
+		return DispatchResult{
+			FailureCount:      1,
+			FailureByPlatform: map[Platform]int{PlatformAndroid: 1},
+			Errors:            []error{errors.New("fcm unavailable")},
+		}, nil
+	}}
+	svc, _ := NewNotificationService(deps)
+	defer svc.Close()
+
+	if _, err := svc.ProcessEvent(context.Background(), validEvent("e1")); err != nil {
+		t.Fatalf("ProcessEvent: %v", err)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.failed != 1 {
+		t.Fatalf("IncNotificationsFailed calls = %d, want 1", m.failed)
+	}
+}
+
 func TestProcessEvent_Metrics_SkippedEventRecordsSkip(t *testing.T) {
 	deps := baseServiceDeps(t)
 	m := &stubMetricsFull{}
@@ -600,6 +725,51 @@ func TestProcessEvent_EnforceBatching_SplitsAcrossMultipleSendCalls(t *testing.T
 	}
 	if got := dispatcher.sendCallCount(); got != 3 { // 2+2+1
 		t.Fatalf("dispatcher.Send call count = %d, want 3 (5 tokens split at MaxTokensPerBatch=2)", got)
+	}
+}
+
+// TestProcessEvent_EnforceBatching_OneBatchErrorsStillAggregatesTheRest
+// exercises dispatchToTokens's lastErr branch: when EnforceBatching splits
+// a token list across several dispatcher.Send calls and only one of them
+// returns a request-level error, the aggregated DispatchResult must still
+// include every other batch's real counts, and the returned error must be
+// that one batch's error (the last one encountered), not swallowed and not
+// aborting the remaining batches.
+func TestProcessEvent_EnforceBatching_OneBatchErrorsStillAggregatesTheRest(t *testing.T) {
+	deps := baseServiceDeps(t)
+	batchErr := errors.New("batch 2 boom")
+	var calls atomic.Int32
+	dispatcher := &stubDispatcher{SendFunc: func(_ context.Context, tokens []DeviceToken, _ Message) (DispatchResult, error) {
+		n := calls.Add(1)
+		if n == 2 {
+			return DispatchResult{FailureCount: len(tokens), Errors: []error{batchErr}}, batchErr
+		}
+		return DispatchResult{SuccessCount: len(tokens)}, nil
+	}}
+	deps.Dispatcher = dispatcher
+	deps.Config.EnforceBatching = true
+	deps.Config.MaxTokensPerBatch = 2
+	for i := 0; i < 5; i++ {
+		_ = deps.TokenStore.SaveToken(context.Background(), DeviceToken{Token: fmt.Sprintf("t%d", i), UserID: "u1"})
+	}
+	svc, _ := NewNotificationService(deps)
+	defer svc.Close()
+
+	result, err := svc.ProcessEvent(context.Background(), validEvent("e1"))
+	if err != nil {
+		t.Fatalf("ProcessEvent: %v", err)
+	}
+	// 5 tokens split into batches of 2 -> [2,2,1]; batch 2 (tokens 3-4)
+	// fails entirely, batches 1 and 3 succeed: 2 (batch1) + 1 (batch3) = 3
+	// successes, 2 failures (batch2).
+	if result.DispatchResult.SuccessCount != 3 {
+		t.Fatalf("aggregated SuccessCount = %d, want 3", result.DispatchResult.SuccessCount)
+	}
+	if result.DispatchResult.FailureCount != 2 {
+		t.Fatalf("aggregated FailureCount = %d, want 2", result.DispatchResult.FailureCount)
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("dispatcher.Send call count = %d, want 3 (a batch error must not abort remaining batches)", calls.Load())
 	}
 }
 

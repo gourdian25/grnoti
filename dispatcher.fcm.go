@@ -202,6 +202,12 @@ func (d *fcmDispatcher) Send(ctx context.Context, tokens []DeviceToken, msg Mess
 	return result, nil
 }
 
+// sendPlatformBatches splits tokens (already grouped to one platform by the
+// caller) into FCMMaxBatchSize-sized batches and sends each in turn,
+// merging results. A batch is skipped (counted as a failure, not attempted)
+// once ctx is already canceled, rather than letting every remaining batch
+// individually discover that via sendBatch/sendBatchWithRetry — cheaper,
+// and avoids a burst of identical "context canceled" log lines.
 func (d *fcmDispatcher) sendPlatformBatches(ctx context.Context, tokens []DeviceToken, msg Message, platform Platform) DispatchResult {
 	var result DispatchResult
 	for _, batch := range d.batchSplitter.Split(tokens, FCMMaxBatchSize) {
@@ -436,6 +442,12 @@ func (d *fcmDispatcher) buildFCMMessage(token string, msg Message, platform Plat
 	return fcmMsg
 }
 
+// buildAndroidConfig maps Message onto FCM's Android-specific payload.
+// DeepLink/Actions/Category have no first-class field on
+// messaging.AndroidConfig, so they're carried in the free-form Data map
+// (as JSON for Actions) for the client app to read on receipt — config.Data
+// is only allocated when at least one of those three is actually present,
+// so a plain notification doesn't grow an empty map.
 func (d *fcmDispatcher) buildAndroidConfig(msg Message) *messaging.AndroidConfig {
 	priority := "normal"
 	if msg.Priority == PriorityHigh {
@@ -478,6 +490,14 @@ func (d *fcmDispatcher) buildAndroidConfig(msg Message) *messaging.AndroidConfig
 	return config
 }
 
+// buildAPNSConfig maps Message onto FCM's APNS-specific payload. Unlike
+// buildAndroidConfig, DeepLink/Actions ride in APNSPayload.CustomData
+// (arbitrary top-level JSON keys alongside "aps"), APNS's own equivalent of
+// Android's Data map; Category, having a first-class Aps.Category field,
+// doesn't need it. MutableContent is always set so a client-side
+// Notification Service Extension can rewrite the notification (e.g. fetch
+// and attach ImageURL) before display — grnoti doesn't do that itself, but
+// leaves the door open for a consuming app's own extension.
 func (d *fcmDispatcher) buildAPNSConfig(msg Message) *messaging.APNSConfig {
 	headers := make(map[string]string)
 	if msg.Priority == PriorityHigh {
@@ -524,6 +544,14 @@ func (d *fcmDispatcher) buildAPNSConfig(msg Message) *messaging.APNSConfig {
 	return &messaging.APNSConfig{Headers: headers, Payload: payload}
 }
 
+// buildWebpushConfig maps Message onto FCM's Web Push payload. Unlike
+// Android/APNS (which only branch on == PriorityHigh, see the Priority
+// const block in types.go), Webpush's "Urgency" header has a genuine three
+// -way mapping and is the one platform where PriorityLow is actually
+// distinguished from PriorityNormal. Actions map onto
+// WebpushNotificationAction directly (Web Push's browser-rendered action
+// buttons), unlike Android/APNS which have no native action-button concept
+// and so carry Actions as opaque JSON/CustomData instead.
 func (d *fcmDispatcher) buildWebpushConfig(msg Message) *messaging.WebpushConfig {
 	headers := make(map[string]string)
 	if msg.TTL > 0 {

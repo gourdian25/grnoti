@@ -4,6 +4,7 @@ package grnoti
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -120,5 +121,49 @@ func TestPreferencesFilter_InvalidTimezoneFailsOpen(t *testing.T) {
 	_, err := isWithinQuietHours(prefs, time.Now())
 	if err == nil {
 		t.Fatal("isWithinQuietHours(invalid timezone) = nil error, want non-nil")
+	}
+}
+
+func TestIsWithinQuietHours_InvalidStart(t *testing.T) {
+	prefs := &NotificationPreferences{QuietHoursEnabled: true, QuietHoursStart: "not-a-time", QuietHoursEnd: "17:00", Timezone: "UTC"}
+	if _, err := isWithinQuietHours(prefs, time.Now()); err == nil {
+		t.Fatal("isWithinQuietHours(invalid start) = nil error, want non-nil")
+	}
+}
+
+func TestIsWithinQuietHours_InvalidEnd(t *testing.T) {
+	prefs := &NotificationPreferences{QuietHoursEnabled: true, QuietHoursStart: "09:00", QuietHoursEnd: "not-a-time", Timezone: "UTC"}
+	if _, err := isWithinQuietHours(prefs, time.Now()); err == nil {
+		t.Fatal("isWithinQuietHours(invalid end) = nil error, want non-nil")
+	}
+}
+
+// erroringPreferencesStore always fails with a generic (non-
+// ErrPreferencesNotFound) error — used to exercise
+// ShouldSendNotification's fail-open branch, distinct from the
+// unconfigured-user (ErrPreferencesNotFound) case already covered above.
+type erroringPreferencesStore struct{ err error }
+
+func (s erroringPreferencesStore) GetPreferences(context.Context, string) (*NotificationPreferences, error) {
+	return nil, s.err
+}
+func (erroringPreferencesStore) SavePreferences(context.Context, *NotificationPreferences) error {
+	return nil
+}
+func (erroringPreferencesStore) IsEventTypeEnabled(context.Context, string, EventType) (bool, error) {
+	return false, nil
+}
+func (erroringPreferencesStore) Close() error { return nil }
+
+func TestPreferencesFilter_GenericStoreErrorFailsOpen(t *testing.T) {
+	store := erroringPreferencesStore{err: errors.New("store unavailable")}
+	filter := NewPreferencesFilter(store, nil)
+
+	allow, reason, err := filter.ShouldSendNotification(context.Background(), Event{UserID: "u1", Type: EventTypeSystemAlert})
+	if !allow || reason != "" {
+		t.Fatalf("ShouldSendNotification(store error) = (%v, %q), want (true, \"\") — fail open", allow, reason)
+	}
+	if err == nil {
+		t.Fatal("ShouldSendNotification(store error) error = nil, want the underlying store error surfaced for logging")
 	}
 }

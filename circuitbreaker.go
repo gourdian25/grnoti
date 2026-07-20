@@ -100,6 +100,13 @@ func (cb *standardCircuitBreaker) Execute(ctx context.Context, fn func() error) 
 	return err
 }
 
+// beforeRequest decides whether a request may proceed, and performs any
+// state transition that decision implies. The Open-to-HalfOpen transition
+// and the immediately-following HalfOpen admission check are one
+// fallthrough case rather than two separate branches so that the request
+// which discovers Timeout has elapsed is itself immediately treated as the
+// (first) half-open trial request, instead of being rejected once more and
+// forcing a second caller to arrive before any trial happens at all.
 func (cb *standardCircuitBreaker) beforeRequest() error {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
@@ -133,6 +140,13 @@ func (cb *standardCircuitBreaker) beforeRequest() error {
 	}
 }
 
+// afterRequest records a completed request's outcome and applies the one
+// state transition it can trigger: a half-open failure reopens the circuit
+// immediately (a single trial failure is enough — see beforeRequest's
+// MaxHalfOpenRequests admission check for why more than one trial can be
+// in flight at once), a half-open success closes it, and a closed-state
+// success resets the consecutive-failure counter so isolated failures
+// don't accumulate toward MaxFailures across unrelated incidents.
 func (cb *standardCircuitBreaker) afterRequest(err error) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()

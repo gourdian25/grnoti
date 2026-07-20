@@ -72,3 +72,35 @@ func TestLocalRateLimiter_UpdateLimit(t *testing.T) {
 		t.Fatalf("GetStats() after UpdateLimit = %+v, want RequestsPerSecond=20", stats)
 	}
 }
+
+func TestLocalRateLimiter_UpdateLimit_InvalidConfig(t *testing.T) {
+	limiter, _ := NewLocalRateLimiter(5, 5)
+	rl := limiter.(*localRateLimiter)
+	if err := rl.UpdateLimit(0, 5); err == nil {
+		t.Fatal("UpdateLimit(rps=0) = nil error, want non-nil")
+	}
+	if err := rl.UpdateLimit(10, 5); err == nil {
+		t.Fatal("UpdateLimit(burst<rps) = nil error, want non-nil")
+	}
+}
+
+func TestLocalRateLimiter_Allow_CanceledContext(t *testing.T) {
+	rl, _ := NewLocalRateLimiter(5, 5)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := rl.Allow(ctx); err == nil {
+		t.Fatal("Allow(canceled ctx) = nil error, want non-nil")
+	}
+}
+
+func TestLocalRateLimiter_Wait_Error(t *testing.T) {
+	rl, _ := NewLocalRateLimiter(1, 1)
+	// Exhaust the burst, then use a context whose deadline is shorter than
+	// one token's refill interval, so Wait's internal timer expires first.
+	_, _ = rl.Allow(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	if err := rl.Wait(ctx); err == nil {
+		t.Fatal("Wait(exhausted burst, short deadline) = nil error, want non-nil")
+	}
+}

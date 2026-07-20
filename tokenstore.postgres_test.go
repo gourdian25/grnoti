@@ -24,6 +24,12 @@ func newTestPostgresTokenStore(t *testing.T) TokenStore {
 	return store
 }
 
+func TestNewPostgresTokenStore_ConnectError(t *testing.T) {
+	if _, err := NewPostgresTokenStore(PostgresConfig{}); err == nil {
+		t.Fatal("NewPostgresTokenStore(empty DSN) = nil error, want non-nil")
+	}
+}
+
 func TestPostgresTokenStore_SaveAndGet(t *testing.T) {
 	store := newTestPostgresTokenStore(t)
 	ctx := context.Background()
@@ -101,5 +107,59 @@ func TestPostgresTokenStore_Close_Idempotent(t *testing.T) {
 	}
 	if _, err := store.GetActiveTokens(context.Background(), "pgu1"); err != ErrClosed {
 		t.Fatalf("GetActiveTokens after Close error = %v, want ErrClosed", err)
+	}
+}
+
+// TestPostgresTokenStore_GenericQueryError uses an already-canceled
+// context to force a real query-level error from every method — the
+// generic (non-ErrClosed) "backend unavailable" wrap branch each method
+// has, otherwise unreachable against a healthy database without fault
+// injection.
+func TestPostgresTokenStore_GenericQueryError(t *testing.T) {
+	store := newTestPostgresTokenStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := store.SaveToken(ctx, DeviceToken{Token: "t1", UserID: "u1"}); err == nil {
+		t.Error("SaveToken(canceled ctx) = nil error, want non-nil")
+	}
+	if _, err := store.GetActiveTokens(ctx, "u1"); err == nil {
+		t.Error("GetActiveTokens(canceled ctx) = nil error, want non-nil")
+	}
+	if _, err := store.GetActiveTokensByAnonymousID(ctx, "a1"); err == nil {
+		t.Error("GetActiveTokensByAnonymousID(canceled ctx) = nil error, want non-nil")
+	}
+	if _, err := store.GetActiveTokensBatch(ctx, []string{"u1"}); err == nil {
+		t.Error("GetActiveTokensBatch(canceled ctx) = nil error, want non-nil")
+	}
+	if err := store.MarkInvalid(ctx, "t1"); err == nil {
+		t.Error("MarkInvalid(canceled ctx) = nil error, want non-nil")
+	}
+	if err := store.DeleteToken(ctx, "t1"); err == nil {
+		t.Error("DeleteToken(canceled ctx) = nil error, want non-nil")
+	}
+}
+
+func TestPostgresTokenStore_AfterClose_EveryMethodReturnsErrClosed(t *testing.T) {
+	store := newTestPostgresTokenStore(t)
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	ctx := context.Background()
+
+	if err := store.SaveToken(ctx, DeviceToken{Token: "t1", UserID: "u1"}); err != ErrClosed {
+		t.Errorf("SaveToken after Close = %v, want ErrClosed", err)
+	}
+	if _, err := store.GetActiveTokensByAnonymousID(ctx, "a1"); err != ErrClosed {
+		t.Errorf("GetActiveTokensByAnonymousID after Close = %v, want ErrClosed", err)
+	}
+	if _, err := store.GetActiveTokensBatch(ctx, []string{"u1"}); err != ErrClosed {
+		t.Errorf("GetActiveTokensBatch after Close = %v, want ErrClosed", err)
+	}
+	if err := store.MarkInvalid(ctx, "t1"); err != ErrClosed {
+		t.Errorf("MarkInvalid after Close = %v, want ErrClosed", err)
+	}
+	if err := store.DeleteToken(ctx, "t1"); err != ErrClosed {
+		t.Errorf("DeleteToken after Close = %v, want ErrClosed", err)
 	}
 }

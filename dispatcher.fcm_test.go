@@ -122,16 +122,33 @@ func (s *stubMetrics) get() int {
 // the client, without depending on ratelimiter.go/ratelimiter.redis.go's
 // own timing behavior.
 type countingRateLimiter struct {
-	waits atomic.Int32
+	waits   atomic.Int32
+	waitErr error // if set, Wait returns this instead of incrementing waits/nil
 }
 
 func (c *countingRateLimiter) Allow(context.Context) (bool, error) { return true, nil }
-func (c *countingRateLimiter) Wait(context.Context) error          { c.waits.Add(1); return nil }
+func (c *countingRateLimiter) Wait(context.Context) error {
+	if c.waitErr != nil {
+		return c.waitErr
+	}
+	c.waits.Add(1)
+	return nil
+}
 func (c *countingRateLimiter) GetStats(context.Context) (RateLimiterStats, error) {
 	return RateLimiterStats{}, nil
 }
 
 func androidToken(tok string) DeviceToken { return DeviceToken{Token: tok, Platform: PlatformAndroid} }
+
+func TestDefaultFCMDispatcherConfig(t *testing.T) {
+	cfg := DefaultFCMDispatcherConfig()
+	if !cfg.EnableRetry {
+		t.Fatal("DefaultFCMDispatcherConfig().EnableRetry = false, want true")
+	}
+	if cfg.MaxRetryAttempts <= 0 {
+		t.Fatalf("DefaultFCMDispatcherConfig().MaxRetryAttempts = %d, want > 0", cfg.MaxRetryAttempts)
+	}
+}
 
 func TestFCMDispatcher_NilClient(t *testing.T) {
 	if _, err := NewFCMDispatcher(FCMDispatcherDeps{}); err != ErrFCMClientNil {
@@ -439,11 +456,66 @@ func TestFCMDispatcher_SendToToken_ClassifiesError(t *testing.T) {
 	}
 }
 
+func TestFCMDispatcher_SendToTopic_CircuitBreakerWraps(t *testing.T) {
+	client := &fakeFCMClient{sendErr: errors.New("boom")}
+	cb, _ := NewCircuitBreaker(1, time.Hour, time.Hour)
+	d, _ := NewFCMDispatcher(FCMDispatcherDeps{Client: client, CircuitBreaker: cb})
+
+	if err := d.SendToTopic(context.Background(), "topic-1", Message{Title: "hi"}); err == nil {
+		t.Fatal("SendToTopic(client error) = nil error, want non-nil")
+	}
+	if got := cb.State(); got != CircuitStateOpen {
+		t.Fatalf("circuit breaker State() after 1 failure (MaxFailures=1) = %s, want %s", got, CircuitStateOpen)
+	}
+	// A second call must be short-circuited by the now-open breaker instead
+	// of reaching the client again.
+	if err := d.SendToTopic(context.Background(), "topic-1", Message{Title: "hi"}); !errors.Is(err, ErrCircuitOpen) {
+		t.Fatalf("SendToTopic (breaker open) error = %v, want ErrCircuitOpen", err)
+	}
+}
+
+func TestFCMDispatcher_SendToToken_CircuitBreakerWraps(t *testing.T) {
+	client := &fakeFCMClient{sendErr: errors.New("boom")}
+	cb, _ := NewCircuitBreaker(1, time.Hour, time.Hour)
+	d, _ := NewFCMDispatcher(FCMDispatcherDeps{Client: client, CircuitBreaker: cb})
+
+	_ = d.SendToToken(context.Background(), androidToken("t1"), Message{Title: "hi"})
+	if got := cb.State(); got != CircuitStateOpen {
+		t.Fatalf("circuit breaker State() after 1 failure (MaxFailures=1) = %s, want %s", got, CircuitStateOpen)
+	}
+}
+
 func TestFCMDispatcher_SendToTopic_Success(t *testing.T) {
 	client := &fakeFCMClient{}
 	d, _ := NewFCMDispatcher(FCMDispatcherDeps{Client: client})
 	if err := d.SendToTopic(context.Background(), "topic-1", Message{Title: "hi"}); err != nil {
 		t.Fatalf("SendToTopic: %v", err)
+	}
+}
+
+func TestFCMDispatcher_SendToToken_RateLimiterError(t *testing.T) {
+	client := &fakeFCMClient{}
+	limiter := &countingRateLimiter{waitErr: errors.New("rate limited")}
+	d, _ := NewFCMDispatcher(FCMDispatcherDeps{Client: client, RateLimiter: limiter})
+	err := d.SendToToken(context.Background(), androidToken("t1"), Message{Title: "hi"})
+	if err == nil || !strings.Contains(err.Error(), "rate limited") {
+		t.Fatalf("SendToToken error = %v, want it to wrap the rate limiter error", err)
+	}
+	if _, sendCalls := client.callCount(); sendCalls != 0 {
+		t.Fatalf("Send call count = %d, want 0 (never reached client)", sendCalls)
+	}
+}
+
+func TestFCMDispatcher_SendToTopic_RateLimiterError(t *testing.T) {
+	client := &fakeFCMClient{}
+	limiter := &countingRateLimiter{waitErr: errors.New("rate limited")}
+	d, _ := NewFCMDispatcher(FCMDispatcherDeps{Client: client, RateLimiter: limiter})
+	err := d.SendToTopic(context.Background(), "topic-1", Message{Title: "hi"})
+	if err == nil || !strings.Contains(err.Error(), "rate limited") {
+		t.Fatalf("SendToTopic error = %v, want it to wrap the rate limiter error", err)
+	}
+	if _, sendCalls := client.callCount(); sendCalls != 0 {
+		t.Fatalf("Send call count = %d, want 0 (never reached client)", sendCalls)
 	}
 }
 
@@ -478,6 +550,187 @@ func TestFCMDispatcher_Send_ContextCanceledStopsFurtherBatches(t *testing.T) {
 	multicastCalls, _ := client.callCount()
 	if multicastCalls != 0 {
 		t.Fatalf("multicast calls = %d, want 0 (ctx already canceled)", multicastCalls)
+	}
+}
+
+func newTestFCMDispatcher(t *testing.T) *fcmDispatcher {
+	t.Helper()
+	d, err := NewFCMDispatcher(FCMDispatcherDeps{Client: &fakeFCMClient{}})
+	if err != nil {
+		t.Fatalf("NewFCMDispatcher: %v", err)
+	}
+	return d.(*fcmDispatcher)
+}
+
+func TestBuildAndroidConfig_AllOptionalFields(t *testing.T) {
+	d := newTestFCMDispatcher(t)
+	badge := 3
+	msg := Message{
+		Title: "t", Body: "b", Priority: PriorityHigh, TTL: time.Hour,
+		CollapseKey: "ck", ChannelID: "chan", Sound: "chime", Badge: &badge,
+		DeepLink: "app://open", Category: CategoryAlert,
+		Actions: []NotificationAction{{ID: "a1", Title: "Open"}},
+	}
+	cfg := d.buildAndroidConfig(msg)
+	if cfg.Priority != "high" {
+		t.Errorf("Priority = %q, want high", cfg.Priority)
+	}
+	if cfg.CollapseKey != "ck" {
+		t.Errorf("CollapseKey = %q, want ck", cfg.CollapseKey)
+	}
+	if cfg.Notification.ChannelID != "chan" || cfg.Notification.Sound != "chime" {
+		t.Errorf("Notification = %+v, want ChannelID=chan Sound=chime", cfg.Notification)
+	}
+	if cfg.Data["deep_link"] != "app://open" || cfg.Data["click_action"] != "app://open" {
+		t.Errorf("Data = %+v, want deep_link/click_action = app://open", cfg.Data)
+	}
+	if cfg.Data["category"] != "alert" {
+		t.Errorf("Data[category] = %q, want alert", cfg.Data["category"])
+	}
+	if cfg.Data["actions"] == "" {
+		t.Error("Data[actions] is empty, want marshaled actions JSON")
+	}
+}
+
+func TestBuildAndroidConfig_DefaultsWhenUnset(t *testing.T) {
+	d := newTestFCMDispatcher(t)
+	cfg := d.buildAndroidConfig(Message{Title: "t", Body: "b"})
+	if cfg.Priority != "normal" {
+		t.Errorf("Priority = %q, want normal", cfg.Priority)
+	}
+	if *cfg.TTL != DefaultTTL {
+		t.Errorf("TTL = %v, want DefaultTTL", *cfg.TTL)
+	}
+	if cfg.Data != nil {
+		t.Errorf("Data = %+v, want nil when no deep link/actions/category set", cfg.Data)
+	}
+}
+
+func TestBuildAPNSConfig_AllOptionalFields(t *testing.T) {
+	d := newTestFCMDispatcher(t)
+	badge := 5
+	msg := Message{
+		Title: "t", Body: "b", Priority: PriorityHigh, TTL: time.Hour,
+		CollapseKey: "ck", Sound: "chime", Badge: &badge,
+		DeepLink: "app://open", Category: CategoryAlert,
+		Actions: []NotificationAction{{ID: "a1", Title: "Open"}},
+	}
+	cfg := d.buildAPNSConfig(msg)
+	if cfg.Headers["apns-priority"] != "10" {
+		t.Errorf(`Headers["apns-priority"] = %q, want "10"`, cfg.Headers["apns-priority"])
+	}
+	if cfg.Headers["apns-collapse-id"] != "ck" {
+		t.Errorf(`Headers["apns-collapse-id"] = %q, want "ck"`, cfg.Headers["apns-collapse-id"])
+	}
+	if _, ok := cfg.Headers["apns-expiration"]; !ok {
+		t.Error(`Headers["apns-expiration"] missing, want it set when TTL > 0`)
+	}
+	if cfg.Payload.Aps.Sound != "chime" {
+		t.Errorf("Aps.Sound = %v, want chime", cfg.Payload.Aps.Sound)
+	}
+	if cfg.Payload.Aps.Badge == nil || *cfg.Payload.Aps.Badge != 5 {
+		t.Errorf("Aps.Badge = %v, want 5", cfg.Payload.Aps.Badge)
+	}
+	if cfg.Payload.Aps.Category != "alert" {
+		t.Errorf("Aps.Category = %q, want alert", cfg.Payload.Aps.Category)
+	}
+	if cfg.Payload.CustomData["deep_link"] != "app://open" {
+		t.Errorf("CustomData[deep_link] = %v, want app://open", cfg.Payload.CustomData["deep_link"])
+	}
+	if cfg.Payload.CustomData["actions"] == nil {
+		t.Error("CustomData[actions] is nil, want the Actions slice")
+	}
+}
+
+func TestBuildAPNSConfig_DefaultsWhenUnset(t *testing.T) {
+	d := newTestFCMDispatcher(t)
+	cfg := d.buildAPNSConfig(Message{Title: "t", Body: "b"})
+	if cfg.Headers["apns-priority"] != "5" {
+		t.Errorf(`Headers["apns-priority"] = %q, want "5" (normal)`, cfg.Headers["apns-priority"])
+	}
+	if _, ok := cfg.Headers["apns-expiration"]; ok {
+		t.Error(`Headers["apns-expiration"] set, want absent when TTL == 0`)
+	}
+	if cfg.Payload.Aps.Sound != "default" {
+		t.Errorf("Aps.Sound = %v, want the default fallback", cfg.Payload.Aps.Sound)
+	}
+	if cfg.Payload.CustomData != nil {
+		t.Errorf("CustomData = %+v, want nil when no deep link/actions set", cfg.Payload.CustomData)
+	}
+}
+
+func TestBuildWebpushConfig_UrgencyMapping(t *testing.T) {
+	d := newTestFCMDispatcher(t)
+	cases := []struct {
+		priority Priority
+		want     string
+	}{
+		{PriorityHigh, "high"},
+		{PriorityLow, "low"},
+		{PriorityNormal, "normal"},
+		{"", "normal"},
+	}
+	for _, tc := range cases {
+		cfg := d.buildWebpushConfig(Message{Title: "t", Body: "b", Priority: tc.priority})
+		if cfg.Headers["Urgency"] != tc.want {
+			t.Errorf("Priority=%q: Headers[Urgency] = %q, want %q", tc.priority, cfg.Headers["Urgency"], tc.want)
+		}
+	}
+}
+
+func TestBuildWebpushConfig_AllOptionalFields(t *testing.T) {
+	d := newTestFCMDispatcher(t)
+	msg := Message{
+		Title: "t", Body: "b", TTL: time.Hour, ImageURL: "https://img", DeepLink: "app://open",
+		Category: CategoryAlert, Actions: []NotificationAction{{ID: "a1", Title: "Open", Icon: "icon.png"}},
+	}
+	cfg := d.buildWebpushConfig(msg)
+	if cfg.Headers["TTL"] == "" {
+		t.Error(`Headers["TTL"] empty, want it set when TTL > 0`)
+	}
+	if cfg.Notification.Image != "https://img" {
+		t.Errorf("Notification.Image = %q, want https://img", cfg.Notification.Image)
+	}
+	if len(cfg.Notification.Actions) != 1 || cfg.Notification.Actions[0].Action != "a1" {
+		t.Errorf("Notification.Actions = %+v, want one action with Action=a1", cfg.Notification.Actions)
+	}
+	if cfg.Data["deep_link"] != "app://open" || cfg.Data["category"] != "alert" {
+		t.Errorf("Data = %+v, want deep_link=app://open category=alert", cfg.Data)
+	}
+}
+
+func TestBuildFCMMessage_PerPlatformConfig(t *testing.T) {
+	d := newTestFCMDispatcher(t)
+	msg := Message{Title: "t", Body: "b", ImageURL: "https://img"}
+
+	android := d.buildFCMMessage("tok", msg, PlatformAndroid)
+	if android.Android == nil || android.APNS != nil || android.Webpush != nil {
+		t.Fatalf("buildFCMMessage(Android) set the wrong platform config: %+v", android)
+	}
+	ios := d.buildFCMMessage("tok", msg, PlatformIOS)
+	if ios.APNS == nil || ios.Android != nil || ios.Webpush != nil {
+		t.Fatalf("buildFCMMessage(iOS) set the wrong platform config: %+v", ios)
+	}
+	web := d.buildFCMMessage("tok", msg, PlatformWeb)
+	if web.Webpush == nil || web.Android != nil || web.APNS != nil {
+		t.Fatalf("buildFCMMessage(Web) set the wrong platform config: %+v", web)
+	}
+	if android.Notification.ImageURL != "https://img" {
+		t.Errorf("Notification.ImageURL = %q, want https://img", android.Notification.ImageURL)
+	}
+}
+
+func TestBuildTopicMessage_SetsAllPlatformConfigs(t *testing.T) {
+	d := newTestFCMDispatcher(t)
+	msg := d.buildTopicMessage("topic-1", Message{Title: "t", Body: "b", ImageURL: "https://img"})
+	if msg.Topic != "topic-1" {
+		t.Errorf("Topic = %q, want topic-1", msg.Topic)
+	}
+	if msg.Android == nil || msg.APNS == nil || msg.Webpush == nil {
+		t.Fatalf("buildTopicMessage() = %+v, want all three platform configs set (a topic fans out to every platform)", msg)
+	}
+	if msg.Notification.ImageURL != "https://img" {
+		t.Errorf("Notification.ImageURL = %q, want https://img", msg.Notification.ImageURL)
 	}
 }
 

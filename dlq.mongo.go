@@ -166,6 +166,13 @@ func (h *mongoDLQHandler) PublishToDLQ(ctx context.Context, event Event, failure
 	return nil
 }
 
+// ClaimRetryableEvents claims events one FindOneAndUpdate per iteration
+// (Mongo has no single-statement "claim up to N rows" equivalent to
+// Postgres's SKIP LOCKED query). On a mid-loop error, already-claimed
+// documents were durably transitioned to DLQStatusRetrying before the
+// failure and are returned alongside the error rather than discarded — see
+// DLQHandler.ClaimRetryableEvents's doc comment for why silently dropping
+// them would orphan those events.
 func (h *mongoDLQHandler) ClaimRetryableEvents(ctx context.Context, limit int) ([]*DLQEvent, error) {
 	if h.closed.Load() {
 		return nil, ErrClosed

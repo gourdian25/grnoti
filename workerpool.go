@@ -92,6 +92,13 @@ func (wp *WorkerPool) Start() {
 	}
 }
 
+// worker is one pool goroutine's dispatch loop: pull an event off the
+// shared queue and run it through handler, or exit once either the queue
+// channel is closed (Stop was called, and this event was the last one
+// buffered) or wp.ctx is canceled — whichever the select statement happens
+// to observe first. A handler error is logged, not retried or returned;
+// retry policy belongs to handler itself (see NewNotificationService's use
+// of this pool, which wraps processEvent).
 func (wp *WorkerPool) worker(id int) {
 	defer wp.wg.Done()
 	for {

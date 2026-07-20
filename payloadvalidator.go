@@ -40,7 +40,10 @@ func (fcmPayloadValidator) EstimateSize(msg Message) int {
 	// from the title/body lengths alone. This deliberately errs toward
 	// undercounting (it ignores msg.Data and JSON structural overhead)
 	// rather than blocking a send on an estimation failure — the real FCM
-	// API call remains the authoritative size check.
+	// API call remains the authoritative size check. In practice this is
+	// unreachable: shape is built only from string/map[string]string
+	// values, which json.Marshal cannot fail on — kept as a real fallback
+	// rather than a panic/assumption, in case shape's construction changes.
 	return len(msg.Title) + len(msg.Body)
 }
 

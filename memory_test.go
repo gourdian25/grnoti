@@ -50,6 +50,8 @@ func TestMemoryTokenStore_GetActiveTokensBatch(t *testing.T) {
 	ctx := context.Background()
 	_ = store.SaveToken(ctx, DeviceToken{Token: "t1", UserID: "u1"})
 	_ = store.SaveToken(ctx, DeviceToken{Token: "t2", UserID: "u2"})
+	_ = store.SaveToken(ctx, DeviceToken{Token: "t3", UserID: "u2"})
+	_ = store.MarkInvalid(ctx, "t3") // must be filtered out of the batch result
 
 	out, err := store.GetActiveTokensBatch(ctx, []string{"u1", "u2", "u3"})
 	if err != nil {
@@ -57,6 +59,23 @@ func TestMemoryTokenStore_GetActiveTokensBatch(t *testing.T) {
 	}
 	if len(out) != 2 {
 		t.Fatalf("GetActiveTokensBatch() = %v, want 2 users", out)
+	}
+	if len(out["u2"]) != 1 {
+		t.Fatalf("GetActiveTokensBatch()[u2] = %v, want 1 active token (t3 is inactive)", out["u2"])
+	}
+}
+
+func TestMemoryTokenStore_SaveToken_PreservesCreatedAtOnUpdate(t *testing.T) {
+	store := NewMemoryTokenStore()
+	ctx := context.Background()
+	_ = store.SaveToken(ctx, DeviceToken{Token: "t1", UserID: "u1"})
+	first, _ := store.GetActiveTokens(ctx, "u1")
+
+	_ = store.SaveToken(ctx, DeviceToken{Token: "t1", UserID: "u1", AppVersion: "2.0"})
+	second, _ := store.GetActiveTokens(ctx, "u1")
+
+	if !second[0].CreatedAt.Equal(first[0].CreatedAt) {
+		t.Fatalf("CreatedAt changed across a re-save: first=%v second=%v", first[0].CreatedAt, second[0].CreatedAt)
 	}
 }
 
@@ -74,6 +93,14 @@ func TestMemoryPreferencesStore_NotFoundThenSave(t *testing.T) {
 	got, err := store.GetPreferences(ctx, "u1")
 	if err != nil || !got.GlobalEnabled {
 		t.Fatalf("GetPreferences() = (%+v, %v), want GlobalEnabled=true", got, err)
+	}
+}
+
+func TestMemoryPreferencesStore_SavePreferences_EmptyUserID(t *testing.T) {
+	store := NewMemoryPreferencesStore()
+	err := store.SavePreferences(context.Background(), &NotificationPreferences{GlobalEnabled: true})
+	if err != ErrNoTargetSpecified {
+		t.Fatalf("SavePreferences(empty UserID) error = %v, want ErrNoTargetSpecified", err)
 	}
 }
 
@@ -165,6 +192,32 @@ func TestMemoryDLQHandler_PublishAndClaim(t *testing.T) {
 	}
 	if len(claimedAgain) != 0 {
 		t.Fatalf("ClaimRetryableEvents (second call) = %v, want empty (already claimed)", claimedAgain)
+	}
+}
+
+func TestMemoryDLQHandler_PublishToDLQ_ExistingEventAppendsHistory(t *testing.T) {
+	h := NewMemoryDLQHandler(3, time.Hour, time.Hour) // long delay: stays pending, not claimable
+	ctx := context.Background()
+
+	_ = h.PublishToDLQ(ctx, Event{EventID: "e1"}, "first failure")
+	_ = h.PublishToDLQ(ctx, Event{EventID: "e1"}, "second failure")
+
+	got, err := h.GetEventByID(ctx, "e1")
+	if err != nil {
+		t.Fatalf("GetEventByID: %v", err)
+	}
+	if len(got.AttemptHistory) != 2 {
+		t.Fatalf("AttemptHistory length = %d, want 2 (republish appends, doesn't replace)", len(got.AttemptHistory))
+	}
+	if got.FailureReason != "second failure" {
+		t.Fatalf("FailureReason = %q, want %q (most recent)", got.FailureReason, "second failure")
+	}
+}
+
+func TestNewMemoryDLQHandler_DefaultsMaxRetries(t *testing.T) {
+	h := NewMemoryDLQHandler(0, 0, 0).(*memoryDLQHandler)
+	if h.config.maxRetries != 3 {
+		t.Fatalf("NewMemoryDLQHandler(maxRetries<=0).config.maxRetries = %d, want 3 (the default)", h.config.maxRetries)
 	}
 }
 

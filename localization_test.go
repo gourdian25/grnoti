@@ -4,6 +4,7 @@ package grnoti
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -96,5 +97,131 @@ func TestLocalizedTemplateEngine_FallsBackToBaseEngine(t *testing.T) {
 	}
 	if msg.Title == "" {
 		t.Fatal("BuildMessage (fallback to base engine) produced an empty title")
+	}
+}
+
+func TestStaticLocaleResolver_ResolveLocaleForAnonymous(t *testing.T) {
+	r := NewStaticLocaleResolver("de")
+	locale, err := r.ResolveLocaleForAnonymous(context.Background(), "anon-1")
+	if err != nil || locale != "de" {
+		t.Fatalf("ResolveLocaleForAnonymous() = (%q, %v), want (de, nil)", locale, err)
+	}
+}
+
+func TestLocalizedTemplateEngine_RegisterTemplate(t *testing.T) {
+	base := NewTemplateEngine()
+	engine := NewLocalizedTemplateEngine(base, NewInMemoryLocalizationStore(), NewStaticLocaleResolver("en"))
+
+	if err := engine.RegisterTemplate(EventTypeCustom, MessageTemplate{TitleTemplate: "{{.title}}", BodyTemplate: "{{.body}}"}); err != nil {
+		t.Fatalf("RegisterTemplate: %v", err)
+	}
+	if err := engine.RegisterTemplate(EventTypeCustom, MessageTemplate{TitleTemplate: "{{.bad"}); err == nil {
+		t.Fatal("RegisterTemplate(malformed template) = nil error, want a parse error (delegated to base engine)")
+	}
+}
+
+func TestPreferencesLocaleResolver(t *testing.T) {
+	store := NewMemoryPreferencesStore()
+	if err := store.SavePreferences(context.Background(), &NotificationPreferences{UserID: "u1", GlobalEnabled: true, Locale: "ja"}); err != nil {
+		t.Fatalf("SavePreferences: %v", err)
+	}
+
+	r := NewPreferencesLocaleResolver(store, "en")
+
+	t.Run("ResolveLocale_UsesStoredLocale", func(t *testing.T) {
+		locale, err := r.ResolveLocale(context.Background(), "u1")
+		if err != nil || locale != "ja" {
+			t.Fatalf("ResolveLocale() = (%q, %v), want (ja, nil)", locale, err)
+		}
+	})
+
+	t.Run("ResolveLocale_FallsBackOnMissingPreferences", func(t *testing.T) {
+		locale, err := r.ResolveLocale(context.Background(), "no-such-user")
+		if err != nil || locale != "en" {
+			t.Fatalf("ResolveLocale() = (%q, %v), want (en, nil) on a store miss", locale, err)
+		}
+	})
+
+	t.Run("ResolveLocale_FallsBackOnEmptyStoredLocale", func(t *testing.T) {
+		_ = store.SavePreferences(context.Background(), &NotificationPreferences{UserID: "u2", GlobalEnabled: true})
+		locale, err := r.ResolveLocale(context.Background(), "u2")
+		if err != nil || locale != "en" {
+			t.Fatalf("ResolveLocale() = (%q, %v), want (en, nil) when the stored Locale is empty", locale, err)
+		}
+	})
+
+	t.Run("ResolveLocaleForAnonymous_AlwaysFallback", func(t *testing.T) {
+		locale, err := r.ResolveLocaleForAnonymous(context.Background(), "anon-1")
+		if err != nil || locale != "en" {
+			t.Fatalf("ResolveLocaleForAnonymous() = (%q, %v), want (en, nil)", locale, err)
+		}
+	})
+
+	t.Run("GetDefaultLocale", func(t *testing.T) {
+		if got := r.GetDefaultLocale(); got != "en" {
+			t.Fatalf("GetDefaultLocale() = %q, want en", got)
+		}
+	})
+}
+
+// errorLocaleResolver always fails ResolveLocale/ResolveLocaleForAnonymous
+// — used to exercise localizedTemplateEngine.BuildMessage's
+// fall-back-to-default-locale-on-error branch.
+type errorLocaleResolver struct{ defaultLocale string }
+
+func (r errorLocaleResolver) ResolveLocale(context.Context, string) (string, error) {
+	return "", errors.New("resolver boom")
+}
+func (r errorLocaleResolver) ResolveLocaleForAnonymous(context.Context, string) (string, error) {
+	return "", errors.New("resolver boom")
+}
+func (r errorLocaleResolver) GetDefaultLocale() string { return r.defaultLocale }
+
+func TestLocalizedTemplateEngine_BuildMessage_LocaleResolverErrorFallsBackToDefault(t *testing.T) {
+	localeStore := NewInMemoryLocalizationStore()
+	_ = localeStore.RegisterLocalizedTemplate(EventTypeSystemAlert, "en", MessageTemplate{TitleTemplate: "Default locale title", BodyTemplate: "ok"})
+
+	engine := NewLocalizedTemplateEngine(NewTemplateEngine(), localeStore, errorLocaleResolver{defaultLocale: "en"})
+	msg, err := engine.BuildMessage(Event{EventID: "e", UserID: "u1", Type: EventTypeSystemAlert})
+	if err != nil {
+		t.Fatalf("BuildMessage: %v", err)
+	}
+	if msg.Title != "Default locale title" {
+		t.Fatalf("BuildMessage() = %+v, want the 'en' (default locale) template used after the resolver error", msg)
+	}
+}
+
+func TestLocalizedTemplateEngine_BuildMessage_NeitherAuthenticatedNorAnonymous(t *testing.T) {
+	localeStore := NewInMemoryLocalizationStore()
+	_ = localeStore.RegisterLocalizedTemplate(EventTypeSystemAlert, "en", MessageTemplate{TitleTemplate: "Direct token title", BodyTemplate: "ok"})
+
+	engine := NewLocalizedTemplateEngine(NewTemplateEngine(), localeStore, NewStaticLocaleResolver("en"))
+	msg, err := engine.BuildMessage(Event{EventID: "e", DeviceTokens: []string{"t1"}, Type: EventTypeSystemAlert})
+	if err != nil {
+		t.Fatalf("BuildMessage: %v", err)
+	}
+	if msg.Title != "Direct token title" {
+		t.Fatalf("BuildMessage() = %+v, want the default-locale template resolved via GetDefaultLocale", msg)
+	}
+}
+
+func TestLocalizedTemplateEngine_BuildMessage_CompileErrorFallsBackToBaseEngine(t *testing.T) {
+	localeStore := NewInMemoryLocalizationStore()
+	_ = localeStore.RegisterLocalizedTemplate(EventTypeSystemAlert, "es", MessageTemplate{TitleTemplate: "{{.unterminated", BodyTemplate: "ok"})
+
+	engine := NewLocalizedTemplateEngine(NewTemplateEngine(), localeStore, NewStaticLocaleResolver("es"))
+	msg, err := engine.BuildMessage(Event{EventID: "e", UserID: "u1", Type: EventTypeSystemAlert})
+	if err != nil {
+		t.Fatalf("BuildMessage: %v", err)
+	}
+	if msg.Title == "" {
+		t.Fatal("BuildMessage (compile error fallback) produced an empty title")
+	}
+}
+
+func TestNewPreferencesLocaleResolver_DefaultsEmptyFallbackToEn(t *testing.T) {
+	r := NewPreferencesLocaleResolver(NewMemoryPreferencesStore(), "")
+	if got := r.GetDefaultLocale(); got != "en" {
+		t.Fatalf("GetDefaultLocale() = %q, want en (empty fallbackLocale defaults to en)", got)
 	}
 }

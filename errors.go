@@ -5,11 +5,10 @@ package grnoti
 import "errors"
 
 // Sentinel errors for use with errors.Is. Backend implementations translate
-// their own native errors (mongo.ErrNoDocuments, gorm.ErrRecordNotFound,
-// redis.Nil, ...) into these sentinels before wrapping with
-// fmt.Errorf("...: %w", ...) — a backend-native error must never leak
-// through a grnoti interface unwrapped, matching grcache's and graudit's
-// own documented rule.
+// their own native errors (mongo.ErrNoDocuments, pgx.ErrNoRows, redis.Nil,
+// ...) into these sentinels before wrapping with fmt.Errorf("...: %w", ...)
+// — a backend-native error must never leak through a grnoti interface
+// unwrapped, matching grcache's and graudit's own documented rule.
 //
 // There is deliberately no IsX(err error) bool helper: callers use
 // errors.Is(err, grnoti.ErrClosed) directly, consistent with every other
