@@ -1,0 +1,32 @@
+version: "2"
+
+linters:
+  # standard = errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    - gosec
+    - misspell
+    - gocritic
+    - revive
+  settings:
+    revive:
+      rules:
+        # TokenStore, PreferencesStore, DLQHandler, PushDispatcher, Logger,
+        # and grevents.Bus/grcache.Cache are fixed interface shapes — test
+        # doubles and backend constructors legitimately don't need every
+        # parameter, and dropping the name would make call sites harder to
+        # read against the interface they're implementing.
+        - name: unused-parameter
+          disabled: true
+  exclusions:
+    rules:
+      # Test files use test-controlled inputs by design (contract-test
+      # factories, backend-specific tamper/fault-injection hooks).
+      - path: _test\.go
+        linters: [gosec, errcheck, gocritic]
+      - path: example/example\.go
+        linters: [gosec, errcheck, gocritic]
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

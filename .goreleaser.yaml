@@ -1,0 +1,70 @@
+version: 2
+
+project_name: grnoti
+
+before:
+  hooks:
+    - go mod tidy
+    - go mod verify
+
+builds:
+  # Library project — no binaries (example/ is a demo program, not a
+  # shipped CLI tool).
+  - skip: true
+
+archives:
+  - id: source
+    # Not tied to any build — the only build above is skipped (pure
+    # library, no binary), so without meta:true this archive silently
+    # produces nothing (confirmed pattern from grcache's/graudit's own
+    # .goreleaser.yaml).
+    meta: true
+    name_template: "{{ .ProjectName }}_{{ .Version }}_src"
+    formats:
+      - tar.gz
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+      - go.mod
+      - go.sum
+      # Both patterns are needed: "**/*.go" only matches files at least one
+      # directory deep, so root-level files (interfaces.go/types.go/...)
+      # need "*.go" too.
+      - "*.go"
+      - "**/*.go"
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+
+release:
+  github:
+    owner: gourdian25
+    name: grnoti
+  draft: false
+  prerelease: auto
+  name_template: "{{ .ProjectName }} {{ .Version }}"
+  header: |
+    ## {{ .ProjectName }} {{ .Version }}
+
+    Push-notification service library for the gourdian ecosystem: FCM
+    dispatch, idempotency, device-token management, dead-letter retry,
+    circuit breaking, deterministic A/B experiment assignment, localization,
+    and topic routing behind a small set of storage-agnostic interfaces.
+
+    See [CHANGELOG.md](https://github.com/gourdian25/grnoti/blob/master/CHANGELOG.md) for full details.
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+      - '^build:'
+      - '^refactor:'
+      - '^style:'
+      - README
+      - Merge pull request

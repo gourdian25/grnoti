@@ -1,8 +1,7 @@
 # grnoti — Scope & Implementation Plan
 
-**Status:** draft, pending review. No implementation code has been written against
-this plan yet — per the mission brief, do not start coding until this has been
-reviewed.
+**Status:** draft, pending review. No implementation code has been written
+against this plan yet.
 
 **Repo path (to be created):** `~/Dev/gourdian25/grnoti`, module
 `github.com/gourdian25/grnoti`.
@@ -11,30 +10,35 @@ reviewed.
 `~/Dev/skipptech/skipp.app.shared.golang.library/grnoti` — 22 files, 7,166
 lines, a working but untested single-package push-notification service
 currently embedded in a shared library. Read end-to-end for this plan (see
-"Research method" below).
+§0).
+
+**Package shape: single flat package, no subpackages.** This is a deliberate
+choice, confirmed explicitly rather than defaulted to — see §4.
 
 ---
 
 ## 0. Research method
 
-The reference source was read in full via two parallel research passes (not
-summarized from memory): storage/dispatch (`interfaces.go`, `types.go`,
-`errors.go`, `config.full.go`, `service.go`, `fcm.dispatcher.go`,
-`store.redis.go`, `store.mongo.go`, `preferences.go`, `preferences.mongo.go`,
-`dlq.handler.go`) and experiment/template/support
-(`experiment.go`, `template.engine.go`, `localization.go`, `topic.router.go`,
-`consumer.kafka.go`, `worker.pool.go`, `circuitbreaker.go`, `ratelimiter.go`,
-`retry.strategy.go`, `batch.splitter.go`, `payload.validator.go`,
-`metrics.prometheus.go`, `event.types.complete.go`). Every defect and design
-decision below is traceable to a specific file:line in that source, not
-inferred.
+The reference source was read in full via two parallel research passes:
+storage/dispatch (`interfaces.go`, `types.go`, `errors.go`, `config.full.go`,
+`service.go`, `fcm.dispatcher.go`, `store.redis.go`, `store.mongo.go`,
+`preferences.go`, `preferences.mongo.go`, `dlq.handler.go`) and
+experiment/template/support (`experiment.go`, `template.engine.go`,
+`localization.go`, `topic.router.go`, `consumer.kafka.go`, `worker.pool.go`,
+`circuitbreaker.go`, `ratelimiter.go`, `retry.strategy.go`,
+`batch.splitter.go`, `payload.validator.go`, `metrics.prometheus.go`,
+`event.types.complete.go`). Every defect and design decision below is
+traceable to a specific file:line in that source.
 
-Five sibling repos were read for ecosystem convention before any design
-decision was made: `grcache` (interface + `cache.go` + `conformance/` +
-`docs/architecture.md`), `graudit` (`events.go`, `postgres/postgres.go`,
-`docs/architecture.md`, `audit.go`, `errors.go`), `grevents`
-(`docs/plan/grevents-plan.md` in full — it has no code yet), `grpolicy`
-(`engine.go`), `gourdiantoken` (`gourdiantoken.factories.go`, CLAUDE.md).
+Six sibling repos were checked directly on disk (git log, tags, file
+listing) rather than trusted from their `CLAUDE.md` summaries, after finding
+that grevents' own `CLAUDE.md` was stale — it claimed "no code yet" while the
+repo is actually tagged `v0.1.1` with a fully implemented, tested `Bus`.
+**Lesson applied throughout this plan: verify sibling state against the
+actual filesystem, not the docs describing it.** All six —
+`grlog` (v0.1.1), `graudit` (v0.2.0), `grpolicy` (v0.1.1), `grcache`
+(v0.2.0), `grevents` (v0.1.1), `gourdiantoken` (v2.1.1) — are real, tagged,
+released packages.
 
 ---
 
@@ -42,353 +46,317 @@ decision was made: `grcache` (interface + `cache.go` + `conformance/` +
 
 ### 1.1 Should `IdempotencyStore` / preferences cache / rate limiter build on `grcache.Cache`?
 
-**Yes for two of three, no for one — and it's a bigger win than "avoid some
-boilerplate."**
+**Yes for two of three, no for one.**
 
 `grcache.Cache` is `Get/Set/Delete/Exists/InvalidateTag/Stats/Close`, generic
 `[]byte` + TTL + tags, with backends for memory/redis/memcached/postgres/mongo
-already built, tested, and conformance-covered.
+already built, tested, and conformance-covered — importable as
+`github.com/gourdian25/grcache` (interface) plus whichever backend
+subpackage the *caller* chooses to construct (`grcache/redis`,
+`grcache/mongostore`, etc.). grnoti's own files only ever import the root
+`grcache` interface, never a specific backend — the caller decides which
+`grcache.Cache` to hand in, so this dependency stays light regardless of
+grnoti's own no-subpackage decision (§4).
 
-- **`IdempotencyStore`** (`IsProcessed`/`MarkProcessed`) maps onto `Get`/`Exists`
-  + `Set(..., ttl)` exactly — no backend-specific logic is actually needed.
-  The source's separate `RedisIdempotencyStore` (257 lines) and
-  `MongoIdempotencyStore` (~150 lines inside `store.mongo.go`) can collapse
-  into **one generic adapter in root** (`NewCacheIdempotencyStore(cache
-  grcache.Cache) IdempotencyStore`) that works against *any* grcache backend.
-  Backend choice becomes "which `grcache.Cache` you construct," not "which
-  grnoti store type you construct." This eliminates ~400 lines of bespoke
-  client code the source hand-rolled.
-- **Preferences read-cache**: same reasoning, plus `InvalidateTag` is a
-  perfect fit for "invalidate this user's cached preferences on write" — tag
-  every cached entry with `"user:" + userID`. One generic decorator,
-  `NewCachedPreferencesStore(store PreferencesStore, cache grcache.Cache, ttl
-  time.Duration) PreferencesStore`, wraps any durable `PreferencesStore` with
-  read-through caching against any `grcache.Cache`.
-- **Experiment assignment cache** (not asked about explicitly, but same
-  shape): assignment is a pure function of `hash(userID+experimentID)` — an
-  `Get`/`Set` memoization, no atomicity required. Same generic
-  grcache-adapter pattern applies. See §4.6.
-- **Distributed rate limiter — no.** `grcache.Cache`'s interface has no
-  atomic increment/CAS primitive. A correct distributed token bucket needs
-  `INCR`+`PEXPIRE` or a Lua script (GCRA), and `Set`/`Get` alone cannot
-  provide that without a race between the read and the write. Extending
-  `grcache.Cache` itself is out of scope (it's a stable sibling library with
-  a fixed, documented interface — see its CLAUDE.md). **Decision: the
-  distributed `RateLimiter` gets its own `grnoti/redis` package with a raw
-  `*redis.Client` and a Lua-scripted or `INCR`-based token bucket.** This is
-  the one place grnoti needs a backend-specific client of its own.
+- **`IdempotencyStore`** (`IsProcessed`/`MarkProcessed`) maps onto `Get`/
+  `Exists` + `Set(..., ttl)` exactly. One generic adapter,
+  `NewCacheIdempotencyStore(cache grcache.Cache) IdempotencyStore`, replaces
+  the source's two separate hand-rolled clients (`RedisIdempotencyStore`,
+  257 lines; `MongoIdempotencyStore`, ~150 lines) with ~40 lines that work
+  against any backend.
+- **Preferences read-cache**: same reasoning, plus `InvalidateTag` fits
+  "invalidate this user's cached preferences on write" exactly — tag every
+  cached entry `"user:" + userID`. `NewCachedPreferencesStore(store
+  PreferencesStore, cache grcache.Cache, ttl time.Duration)
+  PreferencesStore` decorates any durable store with read-through caching.
+- **Experiment assignment cache**: same pattern — assignment is a pure
+  function of `hash(userID, experimentID)`, so caching it is memoization,
+  not a source of truth. Same generic adapter (§4.6 in the interface
+  section).
+- **Distributed rate limiter — no.** `grcache.Cache` has no atomic
+  increment/CAS primitive; a correct distributed token bucket needs
+  `INCR`+`PEXPIRE` or a Lua script, which `Get`/`Set` cannot provide without
+  a read/write race. Extending grcache's interface is out of scope (stable
+  sibling library, fixed documented contract). **This one gets its own raw
+  `*redis.Client`.**
 
-Net effect: `grnoti/redis` shrinks from "IdempotencyStore + whatever else"
-to just the distributed rate limiter — a small, sharply-scoped package.
+### 1.2 grevents — corrected after verifying the real implementation
 
-### 1.2 grevents — DLQ/retry overlap
+**Original mistake, now fixed:** an earlier draft of this plan, based on
+grevents' stale `CLAUDE.md`, concluded grevents didn't exist yet and grnoti
+should defer any dependency on it. That was wrong — grevents is real,
+tested, and already consumed in production by graudit's own `events.go`.
+Corrected conclusions:
 
-**Do not reuse or wait on grevents' `DeadLetterSink`; do reserve the
-lifecycle-event integration for later.**
-
-grevents has zero code — only `docs/plan/grevents-plan.md`. Its planned
-`DeadLetterSink` is explicitly scoped to grevents' own **in-process pub/sub
-redelivery**: "an event that exhausts its retries [being delivered to
-in-process subscribers] is handed to a DeadLetterSink (default: in-memory,
-bounded)... Durability across restarts [is explicitly out of scope] — Events
-(and the DLQ) live in memory only. A process restart loses any queued or
-dead-lettered events." (grevents plan §2.2, §3.5)
-
-grnoti's `DLQHandler` solves a different problem: **durable, queryable,
-cross-restart tracking of FCM push-delivery failures**, so an ops engineer
-can inspect and manually or automatically retry a specific failed push days
-later. These are not the same durability contract — grevents' DLQ is
-allowed to lose everything on restart by design; grnoti's cannot. Building
-grnoti's DLQ on top of grevents' in-memory sink would silently downgrade
-grnoti's own durability promise. **Decision: grnoti's `DLQHandler` stays
-grnoti-owned, backed by its own Postgres/Mongo storage** (see §4.4). Nothing
-here should be "contributed to grevents" — they're solving different
-problems, not duplicating one.
-
-Where grevents *does* eventually matter for grnoti: lifecycle-event
-publishing, following graudit's exact precedent (`PublishRecorded`,
-`"resource.pastTenseVerb"` topics, nil-safe optional `EventBus`, best-effort,
-never blocks the durable operation). grnoti should reserve
-`"notification.sent"`, `"notification.failed"`, `"experiment.assigned"` as
-topic names now, but **not** take an import dependency on grevents in v1,
-since grevents doesn't exist yet and nothing can genuinely depend on an
-unbuilt package. Document the intended shape in `docs/architecture.md` once
-built (mirroring graudit's `events.go`) so it's a drop-in addition, not a
-redesign, once grevents ships.
+- **Lifecycle-event publishing — yes, now, following graudit's exact
+  precedent.** `Bus` injected via config, nil-safe (`bus == nil` is a silent
+  no-op), best-effort (`bus.Publish` errors are logged, never propagated,
+  never block the durable operation). grnoti reserves and publishes
+  `"notification.sent"`, `"notification.failed"`, `"experiment.assigned"` —
+  matching grevents' real `Event{Topic, Payload, Timestamp, Metadata}`
+  shape.
+- **The DLQ conclusion does *not* change**, and this held up against the
+  real code, not just the stale plan doc: grevents' own
+  `NewMemoryDeadLetterSink` doc comment is explicit — "a best-effort
+  recent-history buffer, not a durable audit log... entries are lost on
+  process restart." grnoti's `DLQHandler` needs durability across restarts
+  (an ops engineer inspecting a specific failed push days later), so it
+  stays independently backed by Postgres/Mongo, not grevents' sink. The two
+  solve genuinely different problems: in-process pub/sub redelivery
+  (grevents) vs. durable cross-restart FCM-retry tracking (grnoti).
+- **New: mirror grevents' Full-Jitter backoff formula.** `retry.go`'s
+  `computeBackoff` (`sleep = random(0, min(cap, base·2^attempt))`, the AWS
+  "Full Jitter" formula) is the first backoff-with-jitter implementation in
+  this ecosystem — its own comment notes there was no precedent to port
+  from. It's unexported, so grnoti can't import the function directly, but
+  it should now be *the* ecosystem convention for any new backoff logic.
+  grnoti's two retry paths (FCM dispatch retry, DLQ backoff) mirror this
+  formula instead of the source's un-jittered `base·2^attempt`, which is
+  worse for avoiding synchronized retry storms against FCM after an outage.
 
 ### 1.3 graudit precedent — structure and the Postgres locking technique
 
-Structural precedent (subpackage-per-backend, `conformance/` suite,
-`docs/architecture.md` for divergences) is adopted wholesale — see §5.
+Structural precedent adopted: `docs/architecture.md` for divergences,
+`PublishRecorded`-style best-effort event publishing (§1.2).
 
-**The specific locking technique needs to differ, not just be copied**, and
-this is worth being precise about: graudit's `pg_advisory_xact_lock` is a
-**single global serialization point** — correct for graudit because there is
-exactly one hash chain and only one writer may ever append at a time, by
-design. grnoti's DLQ retry-claiming is the opposite shape: N worker
-replicas should each be able to claim a *different* pending row
-**concurrently**, with no reason to serialize them behind one lock. The
-right technique is `SELECT ... FOR UPDATE SKIP LOCKED` (the source's own
-defect list already names this), which lets N workers each grab a disjoint
-batch without contention. Both are "transactional claim, not read-then-write"
-— that's the shared principle worth taking from graudit — but they are not
-the same mechanism, and using `pg_advisory_xact_lock` for DLQ claiming would
-wrongly serialize an embarrassingly-parallel retry-worker pool. See §4.4 for
-the full DLQ redesign, including a MongoDB alternative that turns out even
-simpler (`findOneAndUpdate` + `$inc`, both natively atomic per-document, no
-transaction needed at all).
+**The locking technique needs to differ, not be copied verbatim** — worth
+being precise about, since it's easy to over-generalize "graudit uses
+`pg_advisory_xact_lock`, so DLQ claiming should too." graudit's lock is a
+**single global serialization point**, correct because there's exactly one
+hash chain and only one writer may ever append at a time, by design.
+grnoti's DLQ retry-claiming is the opposite shape: N worker replicas should
+each claim a *different* pending row **concurrently**, with no reason to
+serialize them. The right technique is `SELECT ... FOR UPDATE SKIP LOCKED`
+(the source's own defect list already names this), letting N workers grab
+disjoint batches without contention. "Transactional claim, not
+read-then-write" is the shared principle worth taking from graudit — the
+specific mechanism is not the same. Full DLQ redesign in §5.
 
 ### 1.4 grpolicy — is `PreferencesFilter` a fit?
 
-**Viable, not adopted for v1.** `grpolicy.Engine.Compile`/`Evaluate` operates
-on `map[string]any` attributes and would technically express quiet-hours +
-opt-out logic. But grpolicy's own CLAUDE.md frames it as "the future
-`grauth` repo's primary dependency" for RBAC/ABAC — pulling an expression
-parser (`expr-lang/expr`) and a second execution model into grnoti for logic
-that's currently a handful of straightforward boolean/time checks would be
-disproportionate, and would couple grnoti's release cadence to grpolicy's.
-**Decision: keep `PreferencesFilter` as native Go logic in v1** (fixing its
-defects, not its architecture), but keep the interface small enough
-(`ShouldSendNotification(ctx, event) (bool, string, error)`) that a
-grpolicy-backed implementation could be dropped in later as an alternate
-`PreferencesFilter` without an interface change. Note this as a future
-option in `docs/architecture.md`, not a v1 task.
+**Viable, not adopted for v1.** grpolicy's `Engine.Compile`/`Evaluate` over
+`map[string]any` would technically express quiet-hours + opt-out logic, but
+grpolicy is explicitly staged as the future `grauth` repo's primary
+dependency, and pulling in an expression parser for logic that's currently a
+handful of boolean/time checks is disproportionate. Keep `PreferencesFilter`
+as native Go logic, but keep its interface small
+(`ShouldSendNotification(ctx, event) (bool, string, error)`) so a
+grpolicy-backed implementation could replace it later without an interface
+change.
 
 ### 1.5 gourdiantoken precedent
 
-Confirmed and adopted: sentinel-error style (`errors.Is`, no `IsX(err) bool`
-helpers), `sync.Once`-guarded idempotent `Close()`. Its flat single-package
-layout is explicitly **not** followed — grnoti needs Mongo + Postgres +
-Redis + Kafka client libraries, and a consumer using only one backend
-shouldn't pull in the other three, which is exactly the problem
-grcache/graudit's subpackage-per-backend layout exists to solve. Its
-`New<Maker>With<Backend>(...)` factory-naming convention *is* followed, but
-grcache's config-struct-owns-its-client variant is preferred over
-gourdiantoken's take-an-already-built-client variant, per grcache's own
-documented reasoning (`docs/architecture.md` item 2) — this also sidesteps
-gourdiantoken's own documented inconsistency (Mongo's constructor taking an
-extra positional `transactionsEnabled bool` that breaks the otherwise
-uniform shape).
+Sentinel-error style and `sync.Once`-guarded idempotent `Close()` are
+adopted. Its **flat single-package layout is now the adopted layout for
+grnoti too** (§4) — this reverses what an earlier draft of this plan said
+("gourdiantoken's flat layout is not the right precedent"). Its
+`New<Maker>With<Backend>(...)` factory-naming convention is followed for
+constructors.
 
 ---
 
 ## 2. Defects confirmed in the reference — and how the rewrite fixes each
 
-All confirmed via direct code read, with file:line references into the
-*source* (not the rewrite, which doesn't exist yet).
+All confirmed via direct code read, file:line references into the *source*.
 
 | # | Defect | Source location | Fix in grnoti |
 |---|---|---|---|
-| 1 | Zero test coverage across 7,166 lines | entire repo | Full `conformance/` suite per storage interface + `-race` mandatory + 70-80% per-package coverage gate, matching every sibling repo |
-| 2 | `deterministicExperimentEngine.experiments`/`.assignments` maps mutated with no synchronization | `experiment.go:54-66,69-88,91-123,140-142` (zero `sync.*`/`atomic.*` in file) | **Not just "add a mutex."** Split storage from algorithm (§4.6): experiment *definitions* move to a Postgres-backed `ExperimentStore`; variant assignment becomes a pure function of `hash(userID, experimentID, variants)` with no mutable map to race on at all; assignment caching (optional, for perf) goes through a `grcache.Cache` adapter, which is already conformance-tested for concurrent access. The race is designed away, not locked away. |
-| 3 | `InMemoryPreferencesStore.preferences` map mutated with no synchronization | `preferences.mongo.go:143-145,156,176,181-199` | The in-memory variant becomes a real `grnoti/memory` conformance-tested backend with a `sync.RWMutex`, matching grcache/memory's and graudit/memory's own pattern — not a silent test-only shortcut. |
-| 4 | `MongoDLQHandler.MarkRetried` read-then-write race (two concurrent retries can both compute the same `newRetryCount`, one write silently loses) | `dlq.handler.go:286-354`, filter at line 324 has no version/status guard | Redesigned atomic-claim DLQ, full detail in §4.4. Postgres: `FOR UPDATE SKIP LOCKED` claim transitions `pending→retrying` atomically; `MarkRetried`'s `UPDATE` is scoped `WHERE event_id=$1 AND status='retrying'`. Mongo: `findOneAndUpdate` for the claim, `$inc` (not Go-side read+`$set`) for the counter — both natively atomic per-document, no transaction required. |
-| 5 | Hard `*grlog.Logger` (concrete type) threaded through every constructor | confirmed in all 11 storage/dispatch files, e.g. `service.go:18,33,57`; `fcm.dispatcher.go:36,44,55`; `store.mongo.go:27,35,382,390`; `preferences.mongo.go:21,25` (not nil-checked — panics on first use if `nil`); `dlq.handler.go:93,104` (nil-checked) | Structural `Logger` interface (`Infof`/`Warnf`/`Errorf`) + `NopLogger()`/`OrNop()` in root `logger.go`, matching grcache/graudit/grpolicy verbatim. Every constructor calls `OrNop` — no nil-check inconsistency across backends like the source has. `*grlog.Logger` used only in test files to prove conformance. |
-| 6 | Sentinel error reuse hiding real error classes | `types.go:104` (`ErrInvalidUserID` reused for "no target specified," source's own comment admits it: `// Reusing error, could create ErrNoTargetSpecified`); `experiment.go:72,93` (`ErrTemplateNotFound` reused for "experiment not found" *and* "experiment has no variants" — two different conditions, one borrowed sentinel whose message literally says "template") | New sentinels: `ErrNoTargetSpecified`, `ErrExperimentNotFound`, `ErrExperimentHasNoVariants`. See also finding beyond the original list, §3.3: 12 of 21 source sentinels are dead code, and there are two disconnected FCM-error taxonomies to consolidate into one. |
-| 7 | No distributed rate limiting — `golang.org/x/time/rate` is per-process; N replicas each enforce the full FCM quota independently | `ratelimiter.go:11,56,90` (confirmed via import list: no redis, no network I/O in the file at all) | `grnoti/redis`'s Lua/`INCR`-based distributed token bucket, per §1.1. Local per-process limiter (same `x/time/rate` wrapping) stays as the default/dev option in root. |
-| 8 | Skipp-specific coupling: hardcoded `skipp://` scheme, ~130 e-commerce `EventType` constants in the core package | `template.engine.go` (8 of 9 default templates, all quoted with line numbers in research — e.g. lines 49-160); `event.types.complete.go` (136 constants across a single 175-line block, lines 12-186); ~50 total `skipp://` occurrences across `template.engine.go` + `localization.go` | See §4.7 — generic vocabulary + `EventTypeCustom` + a real `EventTypeRegistry`, replacing the source's copy-pasted 8-trait switch statements with one data table. Skipp's catalog moves to a consumer-side package, not `example/` (it's real production data, not a demo). |
-| 9 | No-op A/B analytics: `TrackImpression`/`TrackConversion` unconditionally `return nil` | `experiment.go:125-137`, comments explicitly say "placeholder" | New `grnoti/kafka` **producer** (source only ever consumes Kafka — this is new scope, not a port) publishes real impression/conversion events to a Kafka topic. Swappable for a grevents publish once grevents exists, per §1.2. |
-| 10 | Prometheus label triple-counting: `IncNotificationsSent`/`Failed` write into the *same* two-label `CounterVec` three separate ways (unlabeled `("","")`, by-type `(type,"")`, by-platform `("",platform)`), so a caller using more than one variant for the same logical send silently triple-counts on `sum()` | `metrics.prometheus.go:76-136`, all three call patterns quoted in research | Collapse the `Metrics` interface's three incrementer variants into one call taking both labels together (`IncNotificationsSent(eventType EventType, platform Platform, count int)`), so there is exactly one label tuple per logical send, not three orphaned partial tuples. |
+| 1 | Zero test coverage across 7,166 lines | entire repo | Table-driven cross-backend tests (gourdiantoken's own pattern — see §7), `-race` mandatory, 70-80% per-file-group coverage gate |
+| 2 | `deterministicExperimentEngine.experiments`/`.assignments` maps mutated with no synchronization | `experiment.go:54-66,69-88,91-123,140-142` (zero `sync.*`/`atomic.*` in file) | Split storage from algorithm: experiment *definitions* move to a Postgres-backed `ExperimentStore`; variant assignment becomes a pure function of `hash(userID, experimentID, variants)` with no mutable map to race on; assignment caching (optional) goes through the `grcache`-backed adapter. The race is designed away, not locked away. |
+| 3 | `InMemoryPreferencesStore.preferences` map mutated with no synchronization | `preferences.mongo.go:143-145,156,176,181-199` | The in-memory variant gets a real `sync.RWMutex`, matching every other in-memory component in the rewrite — not a silent test-only shortcut. |
+| 4 | `MongoDLQHandler.MarkRetried` read-then-write race (two concurrent retries can compute the same `newRetryCount`, one write silently loses) | `dlq.handler.go:286-354`, filter at line 324 has no version/status guard | Atomic-claim DLQ (§5). Postgres: `FOR UPDATE SKIP LOCKED` claim transitions `pending→retrying`; `MarkRetried`'s `UPDATE` scoped `WHERE event_id=$1 AND status='retrying'`. Mongo: `findOneAndUpdate` for the claim, `$inc` (not Go-side read+`$set`) for the counter — both natively atomic per-document. |
+| 5 | Hard `*grlog.Logger` (concrete type) threaded through every constructor | all 11 storage/dispatch files, e.g. `service.go:18,33,57`; `preferences.mongo.go:21,25` (not nil-checked — panics on first use if `nil`) | Structural `Logger` interface (`Infof`/`Warnf`/`Errorf`) + `NopLogger()`/`OrNop()`, matching every sibling repo verbatim. `*grlog.Logger` used only in test files. |
+| 6 | Sentinel error reuse hiding real error classes | `types.go:104` (`ErrInvalidUserID` reused for "no target specified," source's own comment admits it); `experiment.go:72,93` (`ErrTemplateNotFound` reused for "experiment not found" *and* "experiment has no variants") | New sentinels: `ErrNoTargetSpecified`, `ErrExperimentNotFound`, `ErrExperimentHasNoVariants`. See also §3.3 (12 dead sentinels, two disconnected FCM-error taxonomies). |
+| 7 | No distributed rate limiting — `golang.org/x/time/rate` is per-process; N replicas each enforce the full FCM quota independently | `ratelimiter.go:11,56,90` (no redis, no network I/O in the file) | Raw-Redis Lua/`INCR`-based distributed token bucket (§1.1). Local per-process limiter stays as the default/dev option. |
+| 8 | Skipp-specific coupling: hardcoded `skipp://` scheme, ~130 e-commerce `EventType` constants in the core package | `template.engine.go` (8 of 9 default templates); `event.types.complete.go` (136 constants, one 175-line block) | Generic vocabulary + `EventTypeCustom` + a real `EventTypeRegistry` (§5), replacing 8 copy-pasted trait switch statements with one data table. Skipp's catalog moves to a consumer-side package, not `example/`. |
+| 9 | No-op A/B analytics: `TrackImpression`/`TrackConversion` unconditionally `return nil` | `experiment.go:125-137`, comments say "placeholder" | New Kafka **producer** (source only ever consumes Kafka — new scope) publishes real impression/conversion events. Swappable for a grevents publish later per §1.2. |
+| 10 | Prometheus label triple-counting: `IncNotificationsSent`/`Failed` write into the *same* two-label `CounterVec` three ways (unlabeled, by-type, by-platform), silently triple-counting on `sum()` | `metrics.prometheus.go:76-136` | Collapse into one call taking both labels together: `IncNotificationsSent(eventType EventType, platform Platform, count int)`. |
 
 ---
 
 ## 3. Findings beyond the original defect list
 
-Found during the full read; not in the mission's original defect
-enumeration, but material to the rewrite's architecture.
-
 ### 3.1 `WorkerPool` is built but never wired to anything
 
-`worker.pool.go` (out-of-scope-file grep confirms `NewWorkerPool` exists) and
-`ServiceConfig.EnableBackpressure` / `FullServiceConfig.WorkerPoolConfig`
-(`interfaces.go:174-175`, `config.full.go:51,81-88`) exist, but
-`notificationService` (`service.go:12-23`) has **no `workerPool` field at
-all**, and `EnableBackpressure` is never read in `service.go`'s
-`ProcessEvent`. Setting it has zero observable effect. Separately,
-`consumer.kafka.go`'s `ConsumeClaim` invokes the injected `handler` closure
-**synchronously**, one Kafka message at a time — there is no queue between
-ingestion and processing in the source at all, despite `WorkerPool` existing
-in the same package for exactly this purpose.
-
-**Fix:** wire `WorkerPool` as the actual ingestion→processing bridge: the
-Kafka consumer's handler becomes `func(ctx, event) error { return
-pool.Submit(event) }`, and the pool's own workers call
-`service.ProcessEvent`. This is a real architectural connection the source
-never made, not a cosmetic cleanup.
+`NewWorkerPool` and `ServiceConfig.EnableBackpressure`/
+`FullServiceConfig.WorkerPoolConfig` exist, but `notificationService` has
+**no `workerPool` field at all**, and `EnableBackpressure` is never read in
+`ProcessEvent`. `consumer.kafka.go`'s `ConsumeClaim` invokes its handler
+**synchronously**, one Kafka message at a time — no queue between ingestion
+and processing exists in the source at all. **Fix:** wire `WorkerPool` as
+the real ingestion→processing bridge (Kafka handler → `pool.Submit(event)`
+→ pool workers call `service.ProcessEvent`).
 
 ### 3.2 `RateLimiter` and `CircuitBreaker` have zero touchpoints with dispatch
 
-Grep across `fcm.dispatcher.go` and `service.go` (case-insensitive) returns
-zero hits for either type. Both exist as fully-implemented, independently
-correct components (`ratelimiter.go`, `circuitbreaker.go`) but
-`fcmDispatcher` (`fcm.dispatcher.go:34-40`) has no field for either. The
-mission's own polyglot-persistence table treats both as real, load-bearing
-components of the dispatch path — the rewrite needs to actually wire them
-in (`Execute`-wrap the FCM client call through the circuit breaker;
-`Wait`/`Allow`-gate each outbound batch through the rate limiter), not just
-port the source's already-partial wiring.
+Grep across `fcm.dispatcher.go`/`service.go` returns zero hits for either
+type, despite both being fully implemented elsewhere in the package.
+**Fix:** `Execute`-wrap the FCM client call through the circuit breaker;
+`Wait`/`Allow`-gate each outbound batch through the rate limiter.
 
 ### 3.3 Two disconnected FCM-error taxonomies, and 12 dead sentinels
 
-`errors.go:9-43` defines 21 sentinels; a targeted grep across the whole
-source tree found **12 with zero references anywhere outside their own
-declaration** (`ErrEventAlreadyProcessed`, `ErrNoActiveTokens`,
+12 of 21 sentinels in `errors.go` have zero references anywhere outside
+their own declaration (`ErrEventAlreadyProcessed`, `ErrNoActiveTokens`,
 `ErrMessageBuildFailed`, all 6 `ErrFCM*` variants, `ErrTokenStoreFailure`,
 `ErrIdempotencyStoreFailure`, `ErrContextCanceled`, `ErrContextTimeout`).
-Meanwhile, `fcm.dispatcher.go`'s actual error classification
-(`classifyError`, lines 633-666) builds a completely separate
-`FCMErrorCode`/`FCMError` typed-error system via string-matching on the raw
-SDK error text — never touching the `ErrFCM*` sentinels that exist for
-exactly this purpose. **Fix:** delete the 12 dead sentinels rather than port
-dead code forward; keep and extend the `FCMErrorCode`/`FCMError` taxonomy
-(it's the one actually wired to real behavior via `IsRetryable`/
+`fcm.dispatcher.go`'s real error classification (`classifyError`, lines
+633-666) builds a completely separate `FCMErrorCode`/`FCMError` system via
+string-matching, never touching the `ErrFCM*` sentinels that exist for
+exactly this purpose. **Fix:** delete the 12 dead sentinels; keep and extend
+`FCMErrorCode`/`FCMError` (the one actually wired to `IsRetryable`/
 `IsPermanent`).
 
-### 3.4 `RateLimiter.Reserve()` leaks a third-party type through the public interface
+### 3.4 `RateLimiter.Reserve()` leaks a third-party type through the interface
 
-`ratelimiter.go`'s interface declares `Reserve() *rate.Reservation` — a
-concrete type from `golang.org/x/time/rate` in the package's own public API
-surface (matches every sibling repo's stated rule: "a backend-native error
-[or type] must never leak through the interface unwrapped," per grcache's
-`docs/architecture.md`). This isn't gratuitous cleanup — it's forced by
-§1.1/§2 item 7: the new Redis-backed distributed limiter has no equivalent
-concept to return, so the interface as written cannot be implemented by both
-backends. **Fix:** drop `Reserve()` from the shared `RateLimiter` interface
-(or replace with a grnoti-native `Reservation` type) as part of adding the
-distributed variant.
+`Reserve() *rate.Reservation` puts a concrete `golang.org/x/time/rate` type
+in the public interface. Forced fix, not gratuitous cleanup: the new
+Redis-backed limiter has no equivalent concept to return, so the shared
+interface can't be implemented by both backends as written. **Fix:** drop
+`Reserve()` from `RateLimiter`.
 
 ### 3.5 `MongoDLQHandler.updateExistingDLQEvent` is a second, uncoordinated writer
 
-`PublishToDLQ`'s duplicate-key fallback (`dlq.handler.go:230-252`) does its
-own unguarded `UpdateOne` against the same document `MarkRetried` writes to,
-always pushing `AttemptNumber: 0` regardless of true attempt count — a
-second source of the same lost-update class of bug as finding #4, on a
-different code path. The redesigned atomic-claim DLQ (§4.4) needs to route
-both paths through the same claim/update discipline, not fix `MarkRetried`
-alone and leave this one.
+`PublishToDLQ`'s duplicate-key fallback does its own unguarded `UpdateOne`
+against the same document `MarkRetried` writes to, always pushing
+`AttemptNumber: 0` regardless of true attempt count — a second source of the
+lost-update class of bug in finding #4. The atomic-claim redesign (§5) must
+route both paths through the same claim/update discipline.
+
+### 3.6 `notificationService` never calls `DLQHandler` at all
+
+Not previously called out as its own item: `notificationService` (source
+`service.go:12-23`) has no `DLQHandler` field, and `ProcessEvent` never
+calls `PublishToDLQ` anywhere — a dispatch that exhausts FCM retries is
+logged and its errors surfaced in `DispatchResult.Errors`, but nothing ever
+reaches the DLQ automatically. The entire DLQ subsystem is built but
+unreachable from the main pipeline. **Fix:** wire `DLQHandler` as a real
+dependency of the orchestrator; on a dispatch result with unresolved
+failures after retries are exhausted, call `PublishToDLQ`.
 
 ---
 
-## 4. Package layout
+## 4. Package layout — flat, no subpackages
+
+**Confirmed decision.** grnoti is a single package (`package grnoti`),
+following gourdiantoken's actual layout, not grcache/graudit's
+subpackage-per-backend layout. Files are organized by a
+`<concern>.<backend>.go` naming convention for backend-specific
+implementations, and `<concern>.go` for interfaces/default logic — closer to
+the source's own existing naming (`store.mongo.go`, `dlq.handler.go`) than
+to gourdiantoken's `gourdiantoken.<area>.go` prefix, since the latter exists
+mainly to alphabetize a flat directory and grnoti's file count doesn't need
+that.
 
 ```
-grnoti/                      # root: interfaces, types, errors, logger, docs — plus
-│                             # pure in-process logic with no swappable backend
-│                             # (see divergence note below)
-├── interfaces.go             # TokenStore, IdempotencyStore, PreferencesStore,
-│                             # PreferencesFilter, DLQHandler, PushDispatcher,
-│                             # EventConsumer, Metrics, ExperimentEngine, ExperimentStore,
-│                             # RateLimiter, CircuitBreaker, TemplateEngine,
-│                             # LocalizationStore, LocaleResolver, TopicRouter,
-│                             # BatchSplitter, RetryStrategy, PayloadValidator
-├── types.go                  # Event, DeviceToken, Message, DispatchResult,
-│                             # ProcessingResult, IdempotencyRecord,
-│                             # NotificationPreferences, NotificationAction, Priority, Platform
-├── eventtypes.go             # EventType, EventTypeCustom, EventTypeRegistry (§4.7) —
-│                             # NOT the 130-constant Skipp catalog
-├── errors.go                 # sentinels (post-cleanup, §3.3)
-├── logger.go                 # Logger interface + NopLogger/OrNop
-├── docs.go                   # godoc only
-├── service.go                # NotificationService (orchestrator) — see divergence note
-├── circuitbreaker.go         # stdlib-only, no swappable backend
-├── workerpool.go             # stdlib-only, no swappable backend; now actually wired (§3.1)
-├── ratelimiter.go            # local in-memory token bucket (default/dev), fixed interface (§3.4)
-├── retrystrategy.go          # stdlib-only
-├── batchsplitter.go          # stdlib-only
-├── payloadvalidator.go       # stdlib-only
-├── templateengine.go         # default in-memory impl, generic templates only (§4.7)
-├── localization.go           # LocalizationStore interface + in-memory default + LocaleResolver
-├── topicrouter.go            # stdlib-only, depends only on TokenStore interface
-├── experiment.go             # ExperimentEngine (pure assignment function, §4.6) — no map, no mutex needed
-├── metrics.go                # Metrics interface only (no Prometheus import)
-├── cache_idempotency.go      # grcache.Cache-backed generic IdempotencyStore adapter (§1.1)
-├── cache_preferences.go      # grcache.Cache-backed generic PreferencesStore read-cache decorator (§1.1)
-├── cache_experiment.go       # grcache.Cache-backed generic assignment-cache decorator (§4.6)
-├── events.go                 # reserved topic constants + PublishSent/PublishFailed/PublishAssigned,
-│                             # written once grevents exists (§1.2) — stub/unwired until then
-├── conformance/               # shared behavioral suites, one per storage interface
-├── mongo/                      # TokenStore (primary), DLQHandler (alt)
-├── postgres/                    # TokenStore (alt/GORM), PreferencesStore (source of truth),
-│                               # DLQHandler (primary), ExperimentStore
-├── redis/                        # distributed RateLimiter only (§1.1) — the one genuinely
-│                               # backend-specific new component
-├── kafka/                         # EventConsumer (fixed logger, wired to WorkerPool §3.1) +
-│                               # new analytics producer (§2 item 9)
-├── fcm/                            # PushDispatcher — FCM implementation, now actually wired
-│                               # to RateLimiter + CircuitBreaker + WorkerPool (§3.2)
-└── example/                        # runnable demo
+grnoti/
+├── interfaces.go          # every interface: TokenStore, IdempotencyStore, PreferencesStore,
+│                           # PreferencesFilter, DLQHandler, PushDispatcher, EventConsumer,
+│                           # Metrics, ExperimentEngine, ExperimentStore, RateLimiter,
+│                           # CircuitBreaker, TemplateEngine, LocalizationStore, LocaleResolver,
+│                           # TopicRouter, BatchSplitter, RetryStrategy, PayloadValidator
+├── types.go                # Event, DeviceToken, Message, DispatchResult, ProcessingResult,
+│                           # IdempotencyRecord, NotificationPreferences, NotificationAction,
+│                           # Priority, Platform
+├── eventtypes.go            # EventType, EventTypeCustom, EventTypeRegistry (§5) — generic
+│                           # vocabulary only, not the 130-constant Skipp catalog
+├── errors.go                 # sentinels, post-cleanup (§3.3)
+├── logger.go                  # Logger interface + NopLogger/OrNop
+├── docs.go                     # godoc only
+├── service.go                   # NotificationService orchestrator, now wired to
+│                               # WorkerPool/RateLimiter/CircuitBreaker/DLQHandler (§3.1,3.2,3.6)
+├── circuitbreaker.go             # stdlib-only
+├── workerpool.go                  # stdlib-only, wired as ingestion→processing bridge (§3.1)
+├── ratelimiter.go                  # local in-memory token bucket (default/dev), fixed interface (§3.4)
+├── ratelimiter.redis.go              # distributed token bucket, raw *redis.Client (§1.1)
+├── retrystrategy.go                    # Full-Jitter backoff, mirroring grevents' formula (§1.2)
+├── batchsplitter.go                     # stdlib-only
+├── payloadvalidator.go                   # stdlib-only
+├── templateengine.go                      # default rendering impl, generic templates only (§2 item 8)
+├── localization.go                         # LocalizationStore interface + in-memory default + LocaleResolver
+├── topicrouter.go                           # stdlib-only, depends only on TokenStore interface
+├── experiment.go                             # ExperimentEngine — pure assignment function, no mutex needed (§2 item 2)
+├── metrics.go                                 # Metrics interface only, no Prometheus import
+├── cache.idempotency.go                        # grcache.Cache-backed generic IdempotencyStore adapter (§1.1)
+├── cache.preferences.go                         # grcache.Cache-backed PreferencesStore read-cache decorator (§1.1)
+├── cache.experiment.go                           # grcache.Cache-backed assignment-cache decorator
+├── events.go                                      # grevents integration: topic constants +
+│                                                  # PublishSent/PublishFailed/PublishAssigned (§1.2)
+├── tokenstore.mongo.go                             # TokenStore, primary
+├── tokenstore.postgres.go                           # TokenStore, alt (GORM)
+├── preferences.postgres.go                           # PreferencesStore, source of truth
+├── experimentstore.postgres.go                        # ExperimentStore (definitions)
+├── dlq.postgres.go                                     # DLQHandler, primary (FOR UPDATE SKIP LOCKED)
+├── dlq.mongo.go                                         # DLQHandler, alt (findOneAndUpdate + $inc)
+├── consumer.kafka.go                                     # EventConsumer, wired to WorkerPool (§3.1)
+├── producer.kafka.go                                      # new: experiment analytics producer (§2 item 9)
+├── dispatcher.fcm.go                                       # PushDispatcher, wired to RateLimiter +
+│                                                           # CircuitBreaker + WorkerPool (§3.2)
+├── memory.go                                                # in-memory test/dev variants of every
+│                                                           # storage interface, real sync.RWMutex (§2 item 3)
+└── example/                                                  # runnable demo, package main
 ```
 
-**Divergence from grcache/graudit's "root is contract-only" rule — flagged
-for review, not silently decided.** grcache and graudit both keep *every*
-implementation, including the in-memory one, in its own subpackage
-(`grcache/memory`, `graudit/memory`), so root imports nothing beyond
-stdlib (graudit's one exception being `events.go`'s grevents import).
-grnoti's storage interfaces (`TokenStore`, `PreferencesStore`, `DLQHandler`,
-`IdempotencyStore`, `ExperimentStore`) follow that rule exactly — their
-in-memory/test variants live in a `grnoti/memory` subpackage, not root.
+**The tradeoff this creates, stated plainly:** importing `grnoti` pulls in
+the Mongo driver, GORM+the Postgres driver, `go-redis`, `sarama` (Kafka),
+and the Firebase messaging SDK into every consumer's build, regardless of
+which backends they actually use — this is exactly the problem
+grcache/graudit's subpackage-per-backend layout exists to avoid. This is a
+real cost, not a hidden one. It is the same tradeoff gourdiantoken already
+accepted (its flat package compiles in Redis+Mongo+GORM regardless of which
+one backend a consumer picks), so it's a precedented pattern in this
+ecosystem, not an unprecedented one — grnoti is following the gourdiantoken
+lineage rather than the grcache/graudit lineage, by explicit choice.
 
-But grnoti also has a second category the storage-only sibling repos don't:
-components with **exactly one implementation and no swappable backend at
-all** (`CircuitBreaker`, `WorkerPool`, the local `RateLimiter`,
-`TemplateEngine`'s rendering logic, `TopicRouter`, `BatchSplitter`,
-`RetryStrategy`, `PayloadValidator`, and the orchestrating
-`NotificationService` itself). None of these have a competing
-implementation that isolating them into a subpackage would protect other
-consumers from — there's nothing to keep out of anyone's build. This is
-closer to grevents' plan (`Bus`, `async.go`, `retry.go` all live in *its*
-root, because there's only ever one `Bus`). **Recommendation: keep these in
-grnoti root**, since subpackaging them would fragment the API for zero
-dependency-hygiene benefit — but this is a judgment call, not dictated by
-existing convention, and should be confirmed before implementation starts.
+**What doesn't change:** `grcache`- and `grevents`-backed files
+(`cache.*.go`, `events.go`) only ever import those libraries' lightweight
+root interface packages, not a specific backend subpackage of theirs — that
+choice is deferred to whoever constructs the `grcache.Cache`/`grevents.Bus`
+passed into grnoti's constructors, so those two dependencies don't add to
+the "every backend driver, always" cost described above.
 
-**"Split mongo/postgres further?" — no.** The mission asked whether a
-store's Mongo impl and another store's Mongo impl might not share enough to
-co-locate. They share the one thing that matters for this rule: the same
-underlying driver dependency. The subpackage-per-backend split exists to
-keep *different* client libraries (Redis driver vs. Mongo driver vs.
-GORM/Postgres) out of consumers who don't want them — not to further split
-by which interface a given driver happens to back. `grnoti/mongo` holding
-both `TokenStore` and `DLQHandler` implementations costs a consumer nothing
-they weren't already paying for by importing `grnoti/mongo` at all.
+**Testing implication (replaces the conformance-subpackage plan):** without
+a subpackage-per-backend split, there's no import-cycle problem a separate
+`conformance` package would need to solve. Testing instead follows
+gourdiantoken's actual convention directly: a shared test-helper file
+(`grnoti_test_helpers_test.go`, mirroring gourdiantoken's
+`token.test.helper_test.go`) exposes one factory function per storage
+interface per backend, and a single table-driven test suite runs identical
+behavioral assertions across all of them via `t.Run(backendName, ...)`
+subtests — e.g. `TestTokenStore_Contract` runs the same scenarios against
+`Memory`, `Mongo`, and `Postgres` subtests from one factory table. See §7.
 
 ---
 
 ## 5. Interface & type surface (deltas from the source only)
 
-Full interfaces are in the source's `interfaces.go`/`types.go`/`preferences.go`
-/`dlq.handler.go` — reproduced in the actual code, not this doc. Only the
-changes are listed here.
-
-- **`IdempotencyStore`** — unchanged method signatures (`IsProcessed`,
-  `MarkProcessed`); implementation is now the one `grcache`-backed adapter
-  (§1.1), not per-backend hand-rolled clients.
+- **`IdempotencyStore`** — unchanged signatures; implementation is the one
+  `grcache`-backed adapter (§1.1), not per-backend hand-rolled clients.
 - **`DLQHandler`** — `GetRetryableEvents` becomes `ClaimRetryableEvents`,
-  documented as atomically transitioning claimed rows to a "claiming" state
-  as part of the same call (§4.4), not a plain read. `MarkRetried` keeps its
-  signature but its contract note changes: implementations must scope the
-  update to the claimed state (Postgres: `WHERE status='retrying'`; Mongo:
-  `$inc` not read-then-`$set`).
+  documented as atomically transitioning claimed rows to a "retrying" state
+  as part of the same call. `MarkRetried` keeps its signature but its
+  contract changes: implementations must scope the update to the claimed
+  state (Postgres: `WHERE status='retrying'`; Mongo: `$inc`, not
+  read-then-`$set`).
 - **`RateLimiter`** — drops `Reserve() *rate.Reservation` (§3.4).
-- **`Metrics`** — `IncNotificationsSentByType`/`IncNotificationsSentByPlatform`/
-  `IncNotificationsFailedByType`/`IncNotificationsFailedByPlatform` and their
-  latency-observation counterparts collapse into
+- **`Metrics`** — the four `*ByType`/`*ByPlatform` variants collapse into
   `IncNotificationsSent(eventType EventType, platform Platform, count int)`
   / `IncNotificationsFailed(...)` / `ObserveDispatchLatency(eventType,
   platform, duration)` — one call site, both labels always supplied
-  together, no more orphaned partial-label tuples (§2 item 10).
+  together.
 - **`ExperimentEngine`** — splits into `ExperimentStore` (CRUD for
-  definitions: `Create`/`Get`/`Update`/`Delete`/`List`, Postgres-backed) and
-  a leaner `ExperimentEngine` (`AssignVariant`, `GetVariant`,
-  `TrackImpression`, `TrackConversion`) that takes experiment definitions as
-  input rather than owning them in a mutable map (§4.6, §2 item 2).
-- **`EventType`** — stays a `string`-backed type; new `EventTypeRegistry`
-  interface (§4.7) replaces the source's 8 separate exhaustive `switch`
-  statements over 136 hardcoded constants with one data table plus a
-  `Register` method for consumer-defined types.
+  definitions, Postgres-backed) and a leaner `ExperimentEngine`
+  (`AssignVariant`, `GetVariant`, `TrackImpression`, `TrackConversion`) that
+  takes definitions as input instead of owning them in a mutable map.
+- **`EventType`** — stays `string`-backed; new `EventTypeRegistry` interface
+  replaces the source's 8 separate exhaustive `switch` statements over 136
+  hardcoded constants with one data table plus a `Register` method for
+  consumer-defined types.
+- **`NotificationService`** — now takes `DLQHandler` and (optionally)
+  `grevents.Bus`/`WorkerPool` as real dependencies, none of which the
+  source's constructor accepted (§3.1, §3.6).
 - **New**: `ErrNoTargetSpecified`, `ErrExperimentNotFound`,
-  `ErrExperimentHasNoVariants` (§2 item 6). 12 dead sentinels removed
-  (§3.3).
+  `ErrExperimentHasNoVariants`. 12 dead sentinels removed (§3.3).
 
 ---
 
@@ -396,84 +364,171 @@ changes are listed here.
 
 | Store | Backend | Notes |
 |---|---|---|
-| `TokenStore` | **MongoDB** primary, **Postgres/GORM** alt | unchanged from source's data model |
-| `IdempotencyStore` | **Redis** primary via `grcache`, **Mongo** alt via `grcache` | one generic adapter, not two bespoke stores (§1.1) |
-| `PreferencesStore` | **PostgreSQL** source of truth + **Redis** read-through cache via `grcache` | tag-invalidated on write (`InvalidateTag(ctx, "user:"+userID)`) |
-| `DLQHandler` | **PostgreSQL** primary (`FOR UPDATE SKIP LOCKED` claim) | **Mongo** alt (`findOneAndUpdate` + `$inc`, no transaction needed — simpler than Postgres here) |
-| `EventConsumer` | **Kafka** (consumer, unchanged) + **new Kafka producer** for analytics (§2 item 9) | |
+| `TokenStore` | **MongoDB** primary, **Postgres/GORM** alt | unchanged data model from source |
+| `IdempotencyStore` | **Redis** primary via `grcache`, **Mongo** alt via `grcache` | one generic adapter, not two bespoke stores |
+| `PreferencesStore` | **PostgreSQL** source of truth + **Redis** read-through cache via `grcache` | tag-invalidated on write |
+| `DLQHandler` | **PostgreSQL** primary (`FOR UPDATE SKIP LOCKED`) | **Mongo** alt (`findOneAndUpdate` + `$inc`, no transaction needed) |
+| `EventConsumer` | **Kafka** consumer (unchanged) + **new Kafka producer** for analytics | |
 | `ExperimentStore` (definitions) | **PostgreSQL** | small, relational, admin-managed |
-| Experiment assignment cache | **Redis** via `grcache` | pure-function memoization, not source of truth (§4.6) |
-| `RateLimiter` | **Redis**-backed distributed token bucket, raw client (not `grcache`, §1.1) | local in-memory variant stays default/dev |
-| `CircuitBreaker`, `WorkerPool` queue | in-memory, per-instance, **deliberately** | centralizing risks a synchronized thundering-herd retry on FCM recovery — unchanged from mission brief |
+| Experiment assignment cache | **Redis** via `grcache` | pure-function memoization |
+| `RateLimiter` | **Redis**-backed distributed token bucket, raw client | local in-memory variant stays default/dev |
+| `CircuitBreaker`, `WorkerPool` queue | in-memory, per-instance, **deliberately** | centralizing risks a synchronized thundering-herd retry on FCM recovery |
+| Lifecycle events (`notification.sent`/`failed`, `experiment.assigned`) | **grevents.Bus**, optional/nil-safe | real dependency now, per §1.2 |
 
 ---
 
-## 7. Ecosystem conventions to match exactly
+## 7. Ecosystem conventions to match
 
 - `// File: <relative-path>` header on every `.go` file + `Makefile`,
-  maintained by `bark` (`.bark.toml` already present in the repo).
+  maintained by `bark` (`.bark.toml` already present).
 - Sentinel errors: `errors.Is`-compatible, defined once, no `IsX(err) bool`
   helpers.
-- `Logger` interface (`Infof`/`Warnf`/`Errorf`) + `NopLogger()`/`OrNop()` in
-  root; `*grlog.Logger` used only in test files.
+- `Logger` interface + `NopLogger()`/`OrNop()`; `*grlog.Logger` used only in
+  test files.
 - `Close()` idempotent via `sync.Once` + `atomic.Bool` on every component
   holding a connection/goroutine.
-- `conformance.Run(t, newX, opts...)` per storage interface, importing only
-  the root package (avoids the import cycle the subpackage-per-backend
-  layout would otherwise create) — matching grcache/graudit exactly,
-  including the "options only ever relax a specific, documented guarantee"
-  rule (see grcache's `WithBestEffortTagConcurrency` precedent) if any
-  backend needs one.
+- **Testing — gourdiantoken-style, not grcache/graudit-style**, per §4: one
+  shared factory-table test helper per storage interface, table-driven
+  `t.Run(backendName, ...)` subtests across all backends of that interface.
+  Scope a run to one backend when iterating (`go test -run
+  TestTokenStore_Contract/Memory ./...`) to avoid needing every live service
+  up.
 - Real local services in tests, no mocks, `-race` mandatory. `docker run`
   commands for Redis/Postgres/Mongo(-replica-set, for any transactional
-  path)/Kafka in the eventual `CLAUDE.md`, using yet another set of
-  DB names/ports/indices distinct from grcache's, graudit's, and
-  gourdiantoken's, so all four suites can run concurrently against shared
-  local instances (matching grcache's documented reasoning).
-- Coverage checked **per-package**, not just aggregate — 70-80% gate,
-  `make coverage-check`.
-- `docs/architecture.md` records every deliberate divergence flagged in this
-  plan (the root-package judgment call in §4, the DLQ locking-technique
-  divergence from graudit in §1.3) once the code exists, matching how every
-  sibling repo does this.
-- `docs/plan/grnoti-plan.md` (this file) becomes historical context once
-  code exists, per every sibling repo's own stated convention.
+  path)/Kafka in the eventual `CLAUDE.md`, using a distinct set of DB
+  names/ports/indices from grcache's, graudit's, and gourdiantoken's own
+  test suites, so all can run concurrently against shared local instances.
+- Coverage checked per logical group (each backend's own file +
+  its test file), not just aggregate — 70-80% gate, `make coverage-check`.
+- `docs/architecture.md` records deliberate divergences once code exists —
+  the flat-package decision (§4), the DLQ locking-technique divergence from
+  graudit (§1.3), the ExperimentEngine store/algorithm split (§5).
+- This plan doc becomes historical context once code exists, per every
+  sibling repo's own stated convention.
 
 ---
 
-## 8. Open decisions for review before implementation starts
+## 8. Implementation stages
 
-These are judgment calls made during this plan, not dictated by existing
-ecosystem precedent — flagging explicitly rather than burying the choice:
+Each stage produces a compilable, independently-testable increment. Order
+follows dependency direction — later stages only ever depend on earlier
+ones, never the reverse, so `go build ./...` and `go test ./...` (scoped to
+what exists so far) stay green throughout.
 
-1. **§4 divergence**: keeping `NotificationService`/`CircuitBreaker`/
-   `WorkerPool`/local-`RateLimiter`/`TemplateEngine`/`TopicRouter`/
-   `BatchSplitter`/`RetryStrategy`/`PayloadValidator` in root rather than a
-   subpackage, since none have a competing backend implementation.
-2. **§4.6/§2 item 2**: splitting `ExperimentEngine` into `ExperimentStore`
+### Stage 0 — Repo scaffolding
+`go.mod` (`github.com/gourdian25/grnoti`), `.golangci.yml`,
+`.goreleaser.yaml`, `Makefile` (test/race/bench/lint/vet/fmt/coverage-check/
+release targets, matching sibling repos), `LICENSE`, `SECURITY.md`, empty
+`README.md`/`CHANGELOG.md` skeletons. `.bark.toml` already present in the
+repo — confirm its header convention still applies.
+
+### Stage 1 — Core contracts
+`interfaces.go`, `types.go`, `eventtypes.go` (incl. `EventTypeRegistry`),
+`errors.go`, `logger.go`, `docs.go`. No implementations yet — this stage is
+the contract everything else builds against. Compiles standalone; unit
+tests cover `EventTypeRegistry`, `Event.Validate()`, and sentinel wiring
+only.
+
+### Stage 2 — Pure in-process logic (zero external dependencies)
+`circuitbreaker.go`, `workerpool.go`, `ratelimiter.go` (local token bucket),
+`retrystrategy.go` (Full-Jitter, §1.2), `batchsplitter.go`,
+`payloadvalidator.go`, `templateengine.go` (generic templates, no
+`skipp://`), `localization.go` (in-memory default), `topicrouter.go`,
+`experiment.go` (stateless assignment function, §2 item 2). Each is
+independently unit-testable with no live services — table-driven tests,
+`-race` from day one since this is exactly the layer that had the
+unsynchronized-map defects in the source.
+
+### Stage 3 — `memory.go`: in-memory storage variants
+Real `sync.RWMutex`-protected in-memory implementations of `TokenStore`,
+`PreferencesStore`, `DLQHandler`, `IdempotencyStore`, `ExperimentStore` —
+the test/dev default and the first backend exercised by the Stage-7 shared
+contract tests, since it needs no live service.
+
+### Stage 4 — grcache-backed adapters
+`cache.idempotency.go`, `cache.preferences.go`, `cache.experiment.go` (§1.1).
+Tested against `grcache/memory` (no live service) and optionally
+`grcache/redis` for integration coverage once Stage 8's Redis setup exists.
+
+### Stage 5 — MongoDB backends
+`tokenstore.mongo.go`, `dlq.mongo.go` (findOneAndUpdate + `$inc` claim,
+§1.3/§5). Tested against real local MongoDB (replica set required for any
+transactional path).
+
+### Stage 6 — PostgreSQL backends
+`preferences.postgres.go`, `experimentstore.postgres.go`,
+`dlq.postgres.go` (`FOR UPDATE SKIP LOCKED` claim, §1.3/§5),
+`tokenstore.postgres.go` (alt/GORM). Tested against real local PostgreSQL.
+
+### Stage 7 — Cross-backend contract tests
+The gourdiantoken-style shared test-helper file (§4, §7) exercising every
+storage interface across every backend built in Stages 3, 5, 6 via
+table-driven subtests. This is the point where the "zero test coverage"
+defect (§2 item 1) gets closed for the storage layer specifically.
+
+### Stage 8 — Redis: distributed rate limiter
+`ratelimiter.redis.go` (§1.1, §2 item 7), raw `*redis.Client`, Lua- or
+`INCR`-based token bucket. Tested against real local Redis; extend Stage 4's
+`grcache/redis` integration coverage here too.
+
+### Stage 9 — Kafka: consumer + new producer
+`consumer.kafka.go` (fixed logger, wired to Stage-2's `WorkerPool`, §3.1),
+`producer.kafka.go` (new — experiment analytics, §2 item 9, closing the
+no-op `TrackImpression`/`TrackConversion` defect). Tested against real
+local Kafka.
+
+### Stage 10 — FCM dispatcher
+`dispatcher.fcm.go`, now actually wired to `RateLimiter` + `CircuitBreaker`
++ `WorkerPool` (§3.2) — the source built all three components but never
+connected any of them to dispatch. Fixed error taxonomy (§3.3), fixed
+metrics label collapsing (§2 item 10).
+
+### Stage 11 — `events.go`: grevents integration
+Topic constants + `PublishSent`/`PublishFailed`/`PublishAssigned`, wired as
+an optional `grevents.Bus` field on `NotificationService` and
+`ExperimentEngine` (§1.2), following graudit's real, already-proven
+pattern.
+
+### Stage 12 — `service.go`: orchestration
+`NotificationService`, wiring every prior stage together into the
+`ProcessEvent` pipeline: fixes the validation/preferences/idempotency
+ordering, wires `WorkerPool` as the real ingestion bridge (§3.1), wires
+`DLQHandler` so exhausted-retry dispatches actually reach it (§3.6), wires
+the optional `EventBus` from Stage 11. This is the integration point where
+individually-correct pieces either do or don't compose correctly —
+end-to-end tests belong here, on top of each piece's own unit/contract
+tests from earlier stages.
+
+### Stage 13 — Polish
+`example/` (runnable demo, `package main`), `README.md`, `CLAUDE.md`,
+`docs/architecture.md` (recording the divergences flagged throughout this
+plan), `CHANGELOG.md` entries, final `make precommit`/`make prerelease`
+pass.
+
+---
+
+## 9. Open decisions for review before Stage 0 starts
+
+Judgment calls made during this plan, not dictated by existing precedent —
+flagged rather than buried:
+
+1. **§4**: flat single package, no subpackages — confirmed, reverses this
+   plan's earlier recommendation. The dependency-graph cost (every consumer
+   of `grnoti` pulls in Mongo+Postgres+Redis+Kafka+Firebase driver code
+   regardless of which they use) is accepted as the gourdiantoken-lineage
+   tradeoff, not grcache/graudit's.
+2. **§5/§2 item 2**: splitting `ExperimentEngine` into `ExperimentStore`
    (Postgres CRUD) + a stateless assignment function, instead of the
-   source's single mutable-map type — bigger structural change than "add a
-   mutex," worth confirming before it's built.
+   source's single mutable-map type.
 3. **§2 item 9**: adding a Kafka *producer* for experiment analytics — new
-   scope not present in the source at all (source only ever consumes
-   Kafka).
-4. **§1.4**: deferring grpolicy-backed `PreferencesFilter` entirely rather
-   than building even an optional adapter now.
-5. **§8.6 (naming)**: `GetRetryableEvents` → `ClaimRetryableEvents` rename —
-   confirms the interface's atomicity contract in its name, but is a
-   breaking rename relative to the source's naming.
+   scope, not present in the source.
+4. **§1.4**: deferring grpolicy-backed `PreferencesFilter` entirely.
+5. **§5 naming**: `GetRetryableEvents` → `ClaimRetryableEvents` — a
+   breaking rename relative to the source, chosen to make the interface's
+   atomicity contract explicit in its name.
+6. **§1.2/§4**: taking a real `grevents` dependency now that it's confirmed
+   built and released, rather than deferring it.
 
----
+## 10. Next steps
 
-## 9. Next steps
-
-1. Review this plan (this document).
-2. On approval, scaffold the repo: `go.mod`, `.golangci.yml`,
-   `.goreleaser.yaml`, `Makefile`, `SECURITY.md`, `LICENSE`, `README.md`,
-   `CHANGELOG.md`, `CLAUDE.md` — matching every sibling repo's hygiene set.
-3. Root package first (interfaces/types/errors/logger — the contract
-   everything else implements against), then `conformance/`, then each
-   backend subpackage, then `example/`.
-4. Write `docs/architecture.md` incrementally as real implementation
-   decisions get made, not as a batch at the end — matching how grcache/
-   graudit/grpolicy actually did it.
+Stage 0, on approval of this plan.
