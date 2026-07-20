@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -26,6 +27,23 @@ func pgTime(t pgtype.Timestamptz) time.Time {
 		return time.Time{}
 	}
 	return t.Time.UTC()
+}
+
+// pgInt32 converts a caller-supplied int (e.g. a MaxRetries config value or
+// a ClaimRetryableEvents limit) to the int32 every generated query param
+// expects, clamping instead of silently wrapping on overflow — an actual
+// bounds check rather than a lint suppression, since these values do
+// originate from caller-supplied config/arguments, not internal constants
+// with a provably-safe range.
+func pgInt32(n int) int32 {
+	switch {
+	case n > math.MaxInt32:
+		return math.MaxInt32
+	case n < math.MinInt32:
+		return math.MinInt32
+	default:
+		return int32(n)
+	}
 }
 
 // postgresSchemaSQL is internal/postgresdb/schema.sql, embedded so every

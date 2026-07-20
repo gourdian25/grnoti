@@ -32,11 +32,11 @@ type mongoTokenDoc struct {
 }
 
 func (d mongoTokenDoc) toDeviceToken() DeviceToken {
-	return DeviceToken{
-		Token: d.Token, Platform: d.Platform, UserID: d.UserID, AnonymousID: d.AnonymousID,
-		DeviceID: d.DeviceID, AppVersion: d.AppVersion, IsActive: d.IsActive,
-		CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt,
-	}
+	// mongoTokenDoc's fields are identical to DeviceToken's in name, type,
+	// and order (only the struct tags differ, which Go ignores for
+	// conversion identity), so a direct conversion is equivalent to and
+	// safer than a field-by-field literal that could silently drift.
+	return DeviceToken(d)
 }
 
 // MongoTokenStoreConfig configures a TokenStore constructed by
@@ -115,7 +115,7 @@ func (s *mongoTokenStore) GetActiveTokens(ctx context.Context, userID string) ([
 	if err != nil {
 		return nil, fmt.Errorf("grnoti/mongo: get active tokens for %s: %w", userID, errors.Join(err, ErrBackendUnavailable))
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	var docs []mongoTokenDoc
 	if err := cursor.All(ctx, &docs); err != nil {
@@ -136,7 +136,7 @@ func (s *mongoTokenStore) GetActiveTokensBatch(ctx context.Context, userIDs []st
 	if err != nil {
 		return nil, fmt.Errorf("grnoti/mongo: get active tokens batch: %w", errors.Join(err, ErrBackendUnavailable))
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	out := make(map[string][]DeviceToken)
 	for cursor.Next(ctx) {
@@ -161,7 +161,7 @@ func (s *mongoTokenStore) GetActiveTokensByAnonymousID(ctx context.Context, anon
 	if err != nil {
 		return nil, fmt.Errorf("grnoti/mongo: get active tokens for anonymous %s: %w", anonymousID, errors.Join(err, ErrBackendUnavailable))
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	var docs []mongoTokenDoc
 	if err := cursor.All(ctx, &docs); err != nil {

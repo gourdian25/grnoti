@@ -65,6 +65,7 @@
 ├── payloadvalidator.go
 ├── payloadvalidator_test.go
 ├── postgres.go
+├── postgres_test.go
 ├── preferences.postgres.go
 ├── preferences.postgres_test.go
 ├── preferencesfilter.go
@@ -92,4 +93,4 @@
 ├── workerpool.go
 └── workerpool_test.go
 
-5 directories, 87 files
+5 directories, 88 files

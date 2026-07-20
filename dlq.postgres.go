@@ -107,7 +107,7 @@ func (h *postgresDLQHandler) PublishToDLQ(ctx context.Context, event Event, fail
 	}
 
 	err = h.queries.UpsertDLQEvent(ctx, postgresdb.UpsertDLQEventParams{
-		EventID: event.EventID, EventData: eventData, FailureReason: failureReason, MaxRetries: int32(h.maxRetries),
+		EventID: event.EventID, EventData: eventData, FailureReason: failureReason, MaxRetries: pgInt32(h.maxRetries),
 		FirstFailureAt: pgTimestamptz(now), NextRetryAt: pgTimestamptz(now.Add(h.retryDelay)),
 		Status: string(DLQStatusPending), AttemptHistory: attemptJSON,
 	})
@@ -127,7 +127,7 @@ func (h *postgresDLQHandler) ClaimRetryableEvents(ctx context.Context, limit int
 	now := time.Now().UTC()
 
 	rows, err := h.queries.ClaimRetryableEvents(ctx, postgresdb.ClaimRetryableEventsParams{
-		NextRetryAt: pgTimestamptz(now), UpdatedAt: pgTimestamptz(now), Limit: int32(limit),
+		NextRetryAt: pgTimestamptz(now), UpdatedAt: pgTimestamptz(now), Limit: pgInt32(limit),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("grnoti/postgres: claim retryable events: %w", errors.Join(err, ErrBackendUnavailable))

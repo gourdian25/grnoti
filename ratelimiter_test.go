@@ -62,9 +62,8 @@ func TestLocalRateLimiter_GetStats(t *testing.T) {
 }
 
 func TestLocalRateLimiter_UpdateLimit(t *testing.T) {
-	rl := &localRateLimiter{}
 	limiter, _ := NewLocalRateLimiter(5, 5)
-	rl = limiter.(*localRateLimiter)
+	rl := limiter.(*localRateLimiter)
 	if err := rl.UpdateLimit(20, 20); err != nil {
 		t.Fatalf("UpdateLimit: %v", err)
 	}
