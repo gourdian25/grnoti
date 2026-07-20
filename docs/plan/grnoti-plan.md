@@ -553,7 +553,7 @@ flagged rather than buried:
 
 Stage 0, on approval of this plan.
 
-## 11. Implementation log (decisions made or corrected during Stages 0-6)
+## 11. Implementation log (decisions made or corrected during Stages 0-10)
 
 - **Real local services used throughout**, per the ecosystem's own testing
   philosophy — `grnoti-mongo`, `grnoti-postgres`, `grnoti-redis` docker
@@ -605,3 +605,117 @@ Stage 0, on approval of this plan.
      `cleanupContractCollection` their own short-lived connections, and by
      verifying the fix with three consecutive fresh (`-count=1`) runs, not
      one.
+- **Stage 8 — `ratelimiter.redis.go`**: distributed token bucket over a raw
+  `*redis.Client`, following grcache/redis's own-config/own-client/
+  Ping-on-construct/`sync.Once` Close convention rather than gourdiantoken's
+  take-a-handle pattern (matching grnoti's existing Mongo backends' choice).
+  Refill-then-consume runs as a single Lua script (`tokenBucketScript`) so
+  concurrent callers across replicas see one consistent bucket instead of a
+  read-modify-write race from separate GET/compute/SET round trips —
+  verified with `TestRedisRateLimiter_SharedBucketIsGloballyConsistent`,
+  which runs two independent limiter instances against the same key
+  concurrently and confirms they share one quota rather than each
+  enforcing the full rate independently (the defect this backend exists to
+  fix, §2 item 7). `Wait` polls `Allow` (20ms interval) since there's no
+  Redis-native blocking primitive for a Lua-scripted bucket the way BLPOP
+  gives a plain list. `RateLimiter`'s interface intentionally still has no
+  `Close()` (documented on the interface directly) — `localRateLimiter`
+  owns no resource, so `redisRateLimiter`'s `Close() error` lives on its
+  concrete type only, reached via type assertion, the same pattern already
+  used for `UpdateLimit`.
+- Also closed Stage 4's deferred item: `cache.redis_test.go` extends the
+  `grcache`-backed adapters' coverage (previously exercised only against
+  `grcache/memory`) to real local Redis via `grcache/redis`, now that
+  Stage 8 established the Redis test setup.
+- **Same test-hygiene bug as Stage 7, caught the same way (three
+  consecutive fresh runs, not one)**: the initial `cache.redis_test.go`
+  derived its cache keys/IDs from `t.Name()` alone. Real Redis, like real
+  Mongo/Postgres, persists across separate `go test` invocations — a rerun
+  within the entries' TTL window collided with the prior run's cached
+  value, so `TestCacheIdempotencyStore_Redis_MarkAndCheck`'s "unmarked"
+  assertion and `TestCachedPreferencesStore_Redis_ReadThroughAndInvalidate`'s
+  call-count assertion both failed on the second run despite passing on the
+  first. Fixed by appending a `time.Now().UnixNano()` nonce to every
+  dynamic key/ID in that file, same fix shape as the Mongo DLQ tests'
+  `fmt.Sprintf("dlq_%d", time.Now().UnixNano())` collection naming.
+- **Stage 9 — `consumer.kafka.go` / `producer.kafka.go`**: no sibling repo
+  has a Kafka convention to follow (`grevents` is in-process pub/sub only,
+  confirmed by inspecting its file list — no `sarama`/broker code
+  anywhere), so both files follow the reference implementation's structure
+  directly, with defect #5's fix already generalized (grnoti's own `Logger`
+  interface, not `*grlog.Logger`) rather than a new deviation.
+  `github.com/IBM/sarama` v1.60.0 added as a new dependency; tested against
+  a real local single-broker Kafka (`apache/kafka:3.7.0`, KRaft mode, no
+  Zookeeper needed — `docker run -d --name grnoti-kafka -p 9092:9092
+  apache/kafka:3.7.0`), continuing this repo's real-services-only testing
+  philosophy.
+  - `kafkaEventConsumer` has no compile-time dependency on `WorkerPool` —
+    `EventConsumer.Start`'s handler is supplied by the caller, so "wired to
+    WorkerPool" (§3.1) is proven by
+    `TestKafkaEventConsumer_WiresToWorkerPool` (a handler that does nothing
+    but `pool.Submit`), not a direct import. Full composition is Stage 12's
+    job.
+  - `TestKafkaEventConsumer_HandlerErrorRedeliversAfterRestart` proves the
+    at-least-once contract for real: a message whose handler errors is
+    never marked, so a second consumer in the same group (simulating a
+    crash-and-restart) receives it again — not just asserted from reading
+    the code.
+  - `kafkaAnalyticsPublisher` (`producer.kafka.go`) closes defect §2 item 9
+    (no-op `TrackImpression`/`TrackConversion`): a synchronous
+    (`sarama.SyncProducer`, not async) Kafka producer, messages keyed by
+    `userID` for per-user partition ordering. `experiment.go`'s
+    `AnalyticsPublisher` wiring (added in Stage 2/6) needed no changes — it
+    already called through the interface.
+  - **Same test-hygiene bug as Stages 7-8, caught the same way**: an
+    earlier draft of `kafka_test.go` derived topic names from `t.Name()`
+    alone; fixed before landing by adding a `time.Now().UnixNano()` nonce
+    (`testKafkaTopic`), consistent with the Mongo/Redis precedent — Kafka
+    topics persist across `go test` invocations exactly like Mongo
+    collections and Redis keys do.
+- **Stage 10 — `dispatcher.fcm.go`**: `firebase.google.com/go/v4` added as a
+  new dependency. `FCMClient` (the Admin SDK subset fcmDispatcher needs) is
+  the one deliberate exception to this repo's real-services testing
+  policy — FCM has no local emulator for actually delivering pushes, unlike
+  Mongo/Postgres/Redis/Kafka, which all run in real local docker containers
+  for their own suites — so `dispatcher.fcm_test.go` exercises the
+  dispatcher's own logic (batching, platform grouping, retry, error
+  classification, rate-limiter/circuit-breaker wiring) against a fake
+  `FCMClient`, matching the reference implementation's own justification
+  for the same interface.
+  - §3.2's actual fix landed here: `RateLimiter.Wait` gates every
+    outbound batch/single-send before it reaches `FCMClient`, and
+    `CircuitBreaker.Execute` wraps every `FCMClient` call — both optional
+    on `FCMDispatcherDeps`, proven by `TestFCMDispatcher_Send_
+    RateLimiterGatesEachBatch` (asserts one `Wait` call per batch) and
+    `TestFCMDispatcher_Send_CircuitBreakerOpensAndShortCircuits` (asserts
+    zero further client calls once the breaker trips).
+  - `Metrics.IncInvalidTokens` is called from here (the dispatcher does
+    classify invalid tokens); `IncNotificationsSent`/`Failed` and
+    `ObserveDispatchLatency` are deliberately *not* called from
+    `dispatcher.fcm.go` — `PushDispatcher.Send` only receives
+    tokens+`Message`, never the originating `Event`/`EventType` those
+    calls require, so that wiring belongs in `NotificationService`
+    (Stage 12), not here.
+  - **Real bug found while writing `TestFCMDispatcher_Send_
+    RetriesRetryableErrorsAndRecovers`, fixed before landing**: the first
+    draft of `sendBatchWithRetry` only continued retrying while
+    `result.RetryableErrors > 0` — but a *total* request-level failure
+    (the whole `SendEachForMulticast` call erroring, e.g. a transient
+    network error) never populates `RetryableErrors` at all, since that
+    counter only comes from classifying individual per-token responses in
+    a batch that otherwise succeeded. The bug: a batch that fails
+    outright was retried exactly once (attempt 0) and then silently
+    abandoned, `RetryableErrors == 0` looking identical to "nothing left
+    to retry." Fixed by tracking the two failure shapes separately: a
+    total failure (`sendBatch` returns a non-nil error) now defers to
+    `RetryStrategy.ShouldRetry(attempt, err)`, while a partial per-token
+    failure (`nil` error, `RetryableErrors > 0`) is its own retry signal —
+    routing the latter through `ShouldRetry(attempt, nil)` would never
+    retry at all, since `fullJitterRetry.ShouldRetry` unconditionally
+    treats a `nil` err as "don't retry."
+  - `classifyFCMError`'s substring-matching approach is kept as-is from
+    the reference (`fcm.dispatcher.go:632-666`) — the Admin SDK exposes no
+    structured error-code type, only message text, so there's no better
+    signal to classify on. §3.3's 12 dead `ErrFCM*` sentinels were never
+    carried into grnoti's `errors.go` in the first place (Stage 1), so
+    there was nothing left to delete at this stage.

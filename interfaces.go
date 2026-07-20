@@ -280,6 +280,13 @@ type Metrics interface {
 // per-process) and ratelimiter.redis.go (distributed) for the two
 // implementations — deliberately different backends behind one interface,
 // see docs/plan/grnoti-plan.md §1.1.
+//
+// The interface deliberately has no Close(): localRateLimiter owns no
+// resource, so requiring it would force a no-op on every implementation.
+// redisRateLimiter does own a *redis.Client and exposes a Close() error
+// method on its concrete type — callers using the Redis-backed variant
+// type-assert to it (or to an io.Closer) when they need to shut it down,
+// the same pattern already used for UpdateLimit.
 type RateLimiter interface {
 	// Allow reports whether a request may proceed right now, without
 	// blocking. Consumes a token if true.
