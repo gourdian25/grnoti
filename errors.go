@@ -55,6 +55,10 @@ var (
 	// the requested ID.
 	ErrExperimentNotFound = errors.New("grnoti: experiment not found")
 
+	// ErrExperimentAlreadyExists indicates ExperimentStore.CreateExperiment
+	// was called with an ID that already exists.
+	ErrExperimentAlreadyExists = errors.New("grnoti: experiment already exists")
+
 	// ErrExperimentHasNoVariants indicates an Experiment exists but has
 	// zero ExperimentVariants, so no assignment can be made.
 	ErrExperimentHasNoVariants = errors.New("grnoti: experiment has no variants")

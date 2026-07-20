@@ -1,7 +1,27 @@
 # grnoti — Scope & Implementation Plan
 
-**Status:** draft, pending review. No implementation code has been written
-against this plan yet.
+**Status:** under active implementation (Stages 0-6 complete as of this
+update). See §11 for the log of decisions made or corrected during
+implementation that this plan didn't originally anticipate.
+
+**PostgreSQL tooling correction (post-Stage-6):** this plan originally
+assumed GORM (matching graudit/grcache's own Postgres backends). Implemented
+with GORM first, then explicitly redirected mid-Stage-6 to **pgx/v5 +
+sqlc** instead — raw SQL, compile-time-checked generated query code, no
+ORM/reflection magic. sqlc's generated code lives in `internal/postgresdb`
+(schema + queries + generated `Queries` type), which is an `internal/`
+package, not a public subpackage — stricter than grcache/graudit's own
+public `redis`/`postgres` subpackages (unimportable outside this module),
+so it doesn't reopen the "no subpackages" decision in §4, it's an
+implementation-isolation detail for generated code. Every
+`Postgres*Store`/`PostgresDLQHandler` constructor in root now builds a
+`pgxpool.Pool` + `postgresdb.Queries` via a shared `connectPostgres` helper
+(`postgres.go`) instead of `gorm.Open`. `ClaimRetryableEvents`'s `FOR UPDATE
+SKIP LOCKED` design (§1.3/§5) is unchanged — the sqlc version consolidated
+it into a single `UPDATE ... WHERE id IN (SELECT ... FOR UPDATE SKIP
+LOCKED) RETURNING *` statement, which is actually simpler than the
+GORM-transaction version (no explicit transaction wrapper needed, a single
+statement is already atomic).
 
 **Repo path (to be created):** `~/Dev/gourdian25/grnoti`, module
 `github.com/gourdian25/grnoti`.
@@ -532,3 +552,56 @@ flagged rather than buried:
 ## 10. Next steps
 
 Stage 0, on approval of this plan.
+
+## 11. Implementation log (decisions made or corrected during Stages 0-6)
+
+- **Real local services used throughout**, per the ecosystem's own testing
+  philosophy — `grnoti-mongo`, `grnoti-postgres`, `grnoti-redis` docker
+  containers, not mocks. This caught two real defaulting bugs no amount of
+  code review would have: `NewMemoryDLQHandler`/`NewMongoDLQHandler` both
+  originally defaulted `RetryDelay<=0` to 5 minutes, silently breaking any
+  caller (including the test suite) that deliberately passed `0` for
+  "immediately retry-eligible." Fixed by only defaulting `MaxRetries` (a
+  parameter with no sensible zero-value meaning) and passing
+  `RetryDelay`/`MaxRetryDelay` through unchanged, `0` included.
+- **`preferencesfilter.go` was missing from the original Stage 2 file
+  list** — an oversight caught while wiring Stage 4's cache decorator
+  (which needed `PreferencesFilter` to exist). Implemented then, including
+  `isWithinQuietHours`'s midnight-wraparound math (e.g. `22:00`-`06:00`),
+  which the mission brief had explicitly flagged as "needs verification,
+  not asserted as a bug" — verified correct via table-driven tests
+  (`TestPreferencesFilter_QuietHours_WrappingMidnight`).
+- **PostgreSQL: pgx + sqlc, not GORM** — see the correction note at the top
+  of this document.
+- `ClaimRetryableEvents`'s Postgres implementation turned out simpler with
+  sqlc than originally planned: one `UPDATE ... WHERE id IN (SELECT ... FOR
+  UPDATE SKIP LOCKED) RETURNING *` statement instead of an explicit
+  GORM transaction wrapping a SELECT-then-UPDATE pair.
+- Every concurrent-claim design (`memoryDLQHandler`, `mongoDLQHandler`,
+  `postgresDLQHandler`) has a dedicated stress test proving no event is
+  ever claimed twice under real concurrent load — run under `-race` for the
+  in-memory backend, against real MongoDB/PostgreSQL instances for the
+  other two.
+- **Stage 7 test-hygiene bugs, both in the harness, not the product** —
+  worth recording since both were only found by actually re-running the
+  suite twice against live services, not by review:
+  1. `newStore func() TokenStore`-shaped factories that call `t.Skip` on an
+     *outer* `*testing.T` captured by closure, invoked from inside a nested
+     `t.Run`, target the wrong test's bookkeeping. Fixed by threading the
+     currently-executing `*testing.T` through every contract-test factory
+     (`func(t *testing.T) TokenStore`, etc.) instead of capturing one.
+  2. A cleanup that reused the store's own connection/pool silently did
+     nothing: a test body's `defer store.Close()` always runs before that
+     test's `t.Cleanup`-registered functions, regardless of registration
+     order, so cleanup code needs its own connection independent of the
+     thing under test's lifecycle. Compounded by discarding the resulting
+     error (`_, _ = pool.Exec(...)`) — with the error checked, this would
+     have failed loudly instead of silently leaving data behind. Same root
+     cause hit both the Postgres row-cleanup helper and, separately, the
+     Mongo per-subtest collection naming (`t.Name()` is stable *within* one
+     `go test` invocation but identical *across* separate ones, so without
+     an explicit drop a real MongoDB instance accumulates every prior run
+     under the same name). Fixed by giving both `cleanupContractRows` and
+     `cleanupContractCollection` their own short-lived connections, and by
+     verifying the fix with three consecutive fresh (`-count=1`) runs, not
+     one.
