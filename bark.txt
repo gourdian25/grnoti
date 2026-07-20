@@ -1,0 +1,6 @@
+.
+└── docs/
+    └── plan/
+        └── grnoti-plan.md
+
+2 directories, 1 files
