@@ -4,6 +4,7 @@ package grnoti
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"time"
@@ -131,7 +132,7 @@ func (s *memoryPreferencesStore) GetPreferences(_ context.Context, userID string
 
 func (s *memoryPreferencesStore) SavePreferences(_ context.Context, prefs *NotificationPreferences) error {
 	if prefs.UserID == "" {
-		return ErrNoTargetSpecified
+		return ErrPreferencesUserIDRequired
 	}
 	now := time.Now().UTC()
 	s.mu.Lock()
@@ -150,7 +151,7 @@ func (s *memoryPreferencesStore) SavePreferences(_ context.Context, prefs *Notif
 func (s *memoryPreferencesStore) IsEventTypeEnabled(ctx context.Context, userID string, eventType EventType) (bool, error) {
 	prefs, err := s.GetPreferences(ctx, userID)
 	if err != nil {
-		if err == ErrPreferencesNotFound {
+		if errors.Is(err, ErrPreferencesNotFound) {
 			return true, nil // unconfigured user is opted in, not opted out
 		}
 		return false, err

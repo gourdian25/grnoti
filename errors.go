@@ -50,6 +50,13 @@ var (
 	// hard failure — see PreferencesStore.IsEventTypeEnabled.
 	ErrPreferencesNotFound = errors.New("grnoti: preferences not found")
 
+	// ErrPreferencesUserIDRequired indicates PreferencesStore.SavePreferences
+	// was called with an empty NotificationPreferences.UserID. Distinct from
+	// ErrNoTargetSpecified, which is specifically about an Event having no
+	// resolvable recipient — reusing it here would repeat the exact class of
+	// sentinel-reuse-across-unrelated-conditions bug documented above.
+	ErrPreferencesUserIDRequired = errors.New("grnoti: preferences user id is required")
+
 	// ErrExperimentNotFound indicates no Experiment is registered under
 	// the requested ID.
 	ErrExperimentNotFound = errors.New("grnoti: experiment not found")

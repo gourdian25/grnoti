@@ -75,7 +75,7 @@ func (s *postgresPreferencesStore) SavePreferences(ctx context.Context, prefs *N
 		return ErrClosed
 	}
 	if prefs.UserID == "" {
-		return ErrNoTargetSpecified
+		return ErrPreferencesUserIDRequired
 	}
 	settings, err := json.Marshal(prefs.EventTypeSettings)
 	if err != nil {
@@ -97,7 +97,7 @@ func (s *postgresPreferencesStore) SavePreferences(ctx context.Context, prefs *N
 func (s *postgresPreferencesStore) IsEventTypeEnabled(ctx context.Context, userID string, eventType EventType) (bool, error) {
 	prefs, err := s.GetPreferences(ctx, userID)
 	if err != nil {
-		if err == ErrPreferencesNotFound {
+		if errors.Is(err, ErrPreferencesNotFound) {
 			return true, nil
 		}
 		return false, err

@@ -64,11 +64,14 @@ type PreferencesStore interface {
 	// GetPreferences returns userID's preferences.
 	//
 	// Returns:
-	//   - error: wraps ErrPreferencesNotFound if none exist yet — callers
-	//     generally treat this as "use defaults," not a hard failure
+	//   - error: satisfies errors.Is(err, ErrPreferencesNotFound) if none
+	//     exist yet — callers generally treat this as "use defaults," not a
+	//     hard failure; check via errors.Is, not direct equality, since an
+	//     implementation may wrap it with additional context
 	GetPreferences(ctx context.Context, userID string) (*NotificationPreferences, error)
 
-	// SavePreferences upserts prefs. prefs.UserID must be non-empty.
+	// SavePreferences upserts prefs. prefs.UserID must be non-empty (see
+	// ErrPreferencesUserIDRequired).
 	SavePreferences(ctx context.Context, prefs *NotificationPreferences) error
 
 	// IsEventTypeEnabled reports whether userID should receive

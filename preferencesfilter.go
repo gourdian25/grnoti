@@ -4,6 +4,7 @@ package grnoti
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -31,7 +32,7 @@ func (f *preferencesFilter) ShouldSendNotification(ctx context.Context, event Ev
 
 	prefs, err := f.store.GetPreferences(ctx, event.UserID)
 	if err != nil {
-		if err == ErrPreferencesNotFound {
+		if errors.Is(err, ErrPreferencesNotFound) {
 			return true, "", nil // unconfigured user is opted in, not opted out
 		}
 		// Fail open: a PreferencesStore outage should not silently drop

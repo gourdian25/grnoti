@@ -73,6 +73,36 @@ of each:
   tool twice overwrote sqlc's generated-file marker on
   `internal/postgresdb`, which every Go linter relies on to skip
   generated code — fixed at the root via `.bark.toml`'s exclude list.
+- `workerpool.go`'s `Stop()` called `cancel()` before `close(queue)`,
+  letting each worker's `select` pseudo-randomly exit via the
+  now-ready `ctx.Done()` case instead of draining the buffered queue —
+  silently losing already-accepted, not-yet-processed events on every
+  graceful shutdown. Found via a targeted concurrency audit
+  (`go test -race -run TestWorkerPool_StopDrains -count=200`), not the
+  real-local-services policy above; `Stop()` now closes the queue and
+  waits for full drain before canceling.
+- `localization.go`'s `localizedTemplateEngine.BuildMessage` re-parsed the
+  localized `MessageTemplate`'s title/body `text/template` sources on
+  every call instead of once, unlike `defaultTemplateEngine`, which
+  compiles at `RegisterTemplate` time — `LocalizationStore` has no
+  registration hook this engine can intercept, so `BuildMessage` now
+  caches each compiled template (keyed by event type + locale) and
+  validates cache hits against the freshly-fetched `MessageTemplate` via
+  `reflect.DeepEqual` before reuse, so a template updated via
+  `RegisterLocalizedTemplate` after being cached is still picked up on the
+  next call rather than serving stale content.
+- `preferences.postgres.go`/`memory.go`'s `PreferencesStore.SavePreferences`
+  returned `ErrNoTargetSpecified` — a sentinel documented as meaning "an
+  `Event` has no resolvable recipient" — for an unrelated empty-`UserID`
+  validation; now returns a dedicated `ErrPreferencesUserIDRequired`.
+- Four call sites checked `err == ErrPreferencesNotFound` via direct
+  equality instead of `errors.Is`, contrary to this repo's own sentinel-
+  error convention and `GetPreferences`'s doc comment — harmless only
+  because no implementation currently wraps the error; fixed in
+  `memory.go`, `preferences.postgres.go`, `preferencesfilter.go`, and
+  `cache.preferences.go` so a future implementation is free to add
+  `%w`-wrapped context without silently breaking preferences-defaulting
+  logic.
 
 ### Repository scaffolding
 

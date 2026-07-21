@@ -75,27 +75,39 @@ func TestWorkerPool_RejectsWhenFull(t *testing.T) {
 	}
 }
 
+// TestWorkerPool_StopDrains is the falsifying regression test for a
+// cancel-before-close race in Stop: canceling wp.ctx before closing the
+// queue let a worker's select pseudo-randomly exit via ctx.Done() instead
+// of draining a full, non-empty buffered queue, silently dropping
+// already-Submitted events. Mirrors
+// TestDeterministicExperimentEngine_ConcurrentAssignVariant's pattern of
+// looping many iterations inside one test function, so a reintroduced
+// race is caught reliably within a single `go test -race` invocation
+// instead of depending on an external -count=N.
 func TestWorkerPool_StopDrains(t *testing.T) {
-	var processed atomic.Int64
-	pool, err := NewWorkerPool(WorkerPoolDeps{
-		Config: WorkerPoolConfig{Workers: 3, QueueSize: 100},
-		Handler: func(context.Context, Event) error {
-			processed.Add(1)
-			return nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewWorkerPool: %v", err)
-	}
-	pool.Start()
+	const iterations = 200
+	for iter := 0; iter < iterations; iter++ {
+		var processed atomic.Int64
+		pool, err := NewWorkerPool(WorkerPoolDeps{
+			Config: WorkerPoolConfig{Workers: 3, QueueSize: 100},
+			Handler: func(context.Context, Event) error {
+				processed.Add(1)
+				return nil
+			},
+		})
+		if err != nil {
+			t.Fatalf("NewWorkerPool: %v", err)
+		}
+		pool.Start()
 
-	for i := 0; i < 50; i++ {
-		_ = pool.Submit(Event{EventID: "e"})
-	}
-	pool.Stop()
+		for i := 0; i < 50; i++ {
+			_ = pool.Submit(Event{EventID: "e"})
+		}
+		pool.Stop()
 
-	if got := processed.Load(); got == 0 {
-		t.Fatal("processed = 0 after Stop, want > 0 (queue should have drained at least partially)")
+		if got := processed.Load(); got != 50 {
+			t.Fatalf("iteration %d: processed = %d after Stop, want 50 (queue must drain fully)", iter, got)
+		}
 	}
 }
 

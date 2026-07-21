@@ -93,12 +93,15 @@ func (wp *WorkerPool) Start() {
 }
 
 // worker is one pool goroutine's dispatch loop: pull an event off the
-// shared queue and run it through handler, or exit once either the queue
-// channel is closed (Stop was called, and this event was the last one
-// buffered) or wp.ctx is canceled — whichever the select statement happens
-// to observe first. A handler error is logged, not retried or returned;
-// retry policy belongs to handler itself (see NewNotificationService's use
-// of this pool, which wraps processEvent).
+// shared queue and run it through handler, exiting once the queue channel
+// is closed and fully drained. The ctx.Done() case exists only as a
+// defensive exit for a future caller that cancels wp.ctx from outside
+// Stop — under Stop's current close-drain-then-cancel ordering (see
+// Stop's own doc comment), wp.ctx is never canceled until every worker
+// has already returned via the closed-queue case, so ctx.Done() does not
+// fire in practice today. A handler error is logged, not retried or
+// returned; retry policy belongs to handler itself (see
+// NewNotificationService's use of this pool, which wraps processEvent).
 func (wp *WorkerPool) worker(id int) {
 	defer wp.wg.Done()
 	for {
@@ -139,18 +142,21 @@ func (wp *WorkerPool) SubmitAsync(event Event) bool {
 	return wp.Submit(event) == nil
 }
 
-// Stop signals workers to stop accepting new dispatch loop iterations,
-// closes the queue, and blocks until every worker goroutine has returned —
-// draining whatever was still buffered in the queue when Stop was called,
-// except for the (documented, unavoidable) race where a worker exits via
-// ctx.Done() at the same moment queue-drain would otherwise have delivered
-// it one more event; select between two simultaneously-ready cases is
-// unspecified in Go, so Stop does not guarantee a queue emptied strictly
-// before ctx cancellation propagates.
+// Stop closes the queue, waits for every worker to fully drain it and
+// exit, and only then cancels wp.ctx. This ordering is what makes drain
+// deterministic: while the queue is closing but wp.ctx is not yet
+// canceled, ctx.Done() is never ready, so each worker's select has
+// exactly one viable case — read the queue until it reports empty-and-
+// closed. Stop therefore guarantees every event successfully Submitted
+// before Stop was called is delivered to a worker and run through
+// handler before Stop returns. Canceling only after every worker has
+// exited also means handler still runs with a live (non-canceled) ctx
+// for every event drained during shutdown, rather than racing an
+// already-canceled one.
 func (wp *WorkerPool) Stop() {
-	wp.cancel()
 	close(wp.queue)
 	wp.wg.Wait()
+	wp.cancel()
 	wp.logger.Infof("grnoti: worker pool stopped")
 }
 

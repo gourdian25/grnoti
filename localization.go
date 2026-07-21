@@ -4,6 +4,7 @@ package grnoti
 
 import (
 	"context"
+	"reflect"
 	"sync"
 )
 
@@ -126,10 +127,30 @@ func (r staticLocaleResolver) GetDefaultLocale() string { return r.locale }
 // localized template is registered for the event's type. Unlike the
 // reference implementation, this never constructs a throwaway TemplateEngine
 // per call; see compileTemplate/renderMessage's doc comments.
+//
+// A compiled-template cache (keyed by eventType+locale) avoids re-parsing
+// the same MessageTemplate on every BuildMessage call: LocalizationStore
+// has no registration hook this engine can intercept the way
+// defaultTemplateEngine.RegisterTemplate compiles once up front, so the
+// cache is populated lazily on first use instead. Each cache hit is
+// validated with reflect.DeepEqual against the just-fetched
+// MessageTemplate (a cheap struct comparison next to text/template
+// parsing) before being reused, so a template updated via
+// LocalizationStore.RegisterLocalizedTemplate after it was first cached is
+// still picked up on the next BuildMessage call rather than serving a
+// stale compiled form indefinitely.
 type localizedTemplateEngine struct {
 	baseEngine     TemplateEngine
 	localeStore    LocalizationStore
 	localeResolver LocaleResolver
+
+	mu    sync.RWMutex
+	cache map[string]localizedCacheEntry // key: string(eventType) + ":" + locale
+}
+
+type localizedCacheEntry struct {
+	source   MessageTemplate
+	compiled *compiledTemplate
 }
 
 var _ TemplateEngine = (*localizedTemplateEngine)(nil)
@@ -137,7 +158,12 @@ var _ TemplateEngine = (*localizedTemplateEngine)(nil)
 // NewLocalizedTemplateEngine wraps baseEngine with locale-aware rendering,
 // itself implementing TemplateEngine so it's a drop-in replacement.
 func NewLocalizedTemplateEngine(baseEngine TemplateEngine, localeStore LocalizationStore, localeResolver LocaleResolver) TemplateEngine {
-	return &localizedTemplateEngine{baseEngine: baseEngine, localeStore: localeStore, localeResolver: localeResolver}
+	return &localizedTemplateEngine{
+		baseEngine:     baseEngine,
+		localeStore:    localeStore,
+		localeResolver: localeResolver,
+		cache:          make(map[string]localizedCacheEntry),
+	}
 }
 
 func (e *localizedTemplateEngine) RegisterTemplate(eventType EventType, tmpl MessageTemplate) error {
@@ -164,9 +190,37 @@ func (e *localizedTemplateEngine) BuildMessage(event Event) (Message, error) {
 		return e.baseEngine.BuildMessage(event)
 	}
 
-	compiled, err := compileTemplate(event.Type, localizedTmpl)
+	compiled, err := e.getCompiled(event.Type, locale, localizedTmpl)
 	if err != nil {
 		return e.baseEngine.BuildMessage(event)
 	}
 	return renderMessage(compiled, event)
+}
+
+// getCompiled returns a compiledTemplate for source, reusing a cached one
+// if source is unchanged since it was cached, and compiling (then caching)
+// otherwise. A source that fails to compile is not cached — it is
+// re-attempted (and re-fail) on every call, matching this engine's
+// existing fall-back-to-base-engine behavior for a malformed template
+// rather than caching a failure.
+func (e *localizedTemplateEngine) getCompiled(eventType EventType, locale string, source MessageTemplate) (*compiledTemplate, error) {
+	key := string(eventType) + ":" + locale
+
+	e.mu.RLock()
+	entry, ok := e.cache[key]
+	e.mu.RUnlock()
+	if ok && reflect.DeepEqual(entry.source, source) {
+		return entry.compiled, nil
+	}
+
+	compiled, err := compileTemplate(eventType, source)
+	if err != nil {
+		return nil, err
+	}
+
+	e.mu.Lock()
+	e.cache[key] = localizedCacheEntry{source: source, compiled: compiled}
+	e.mu.Unlock()
+
+	return compiled, nil
 }

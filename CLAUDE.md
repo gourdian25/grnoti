@@ -12,6 +12,52 @@ A push-notification service library for the gourdian ecosystem
 [docs/plan/grnoti-plan.md](docs/plan/grnoti-plan.md) for the full
 stage-by-stage build history.
 
+## Architecture at a glance
+
+Full rationale lives in [docs/architecture.md](docs/architecture.md) — this
+is the condensed version so you don't have to open it for routine changes.
+
+**File naming**: every backend for a given concern is
+`<concern>.<backend>.go` with tests in `<concern>.<backend>_test.go` (e.g.
+`tokenstore.mongo.go`, `dlq.postgres.go`, `ratelimiter.redis.go`). In-memory
+variants of every store live together in `memory.go`; `grcache`-backed
+adapters (idempotency, preferences read-through, experiment-assignment
+cache) live in `cache.*.go`. This is a deliberate divergence from sibling
+repos (`grcache`, `graudit`) that use one subpackage per backend to keep
+unused drivers out of a consumer's dependency graph — grnoti accepts a
+heavier import (Mongo driver, pgx, go-redis, sarama, Firebase Admin SDK,
+regardless of which backends you actually use) for a simpler, flat package.
+
+**Every capability is a small interface** (`interfaces.go`) with 2-3
+concrete implementations; `NotificationService` (`service.go`) is the
+orchestrator that composes them all via `ServiceDeps`. The interface list
+and its full in-memory/cache/Mongo/Postgres/other matrix is in
+docs/architecture.md §2 — key ones to know before touching related code:
+`TokenStore`, `PreferencesStore`, `DLQHandler`, `ExperimentStore` +
+`ExperimentEngine` (assignment is a pure deterministic function, split
+from the store — see §3.5), `IdempotencyStore`, `RateLimiter`,
+`PushDispatcher` (FCM only), `EventConsumer`/`AnalyticsPublisher` (Kafka
+only), `TemplateEngine`, `TopicRouter`, `CircuitBreaker`.
+
+**Load-bearing design decisions** (each has a full writeup in
+docs/architecture.md §3 — read the relevant one before changing the file
+it names):
+
+- `EventConsumer.Start(ctx, service.Submit)` is the entire Kafka-to-processing
+  wiring — the two signatures match on purpose (§3.1).
+- `RateLimiter`/`CircuitBreaker`, when set in `FCMDispatcherDeps`, actually
+  gate every outbound FCM call in `dispatcher.fcm.go` (§3.2) — don't build a
+  new dispatch path that bypasses them.
+- `DLQHandler.ClaimRetryableEvents` atomically claims (not just reads)
+  retryable events; MongoDB's per-document claim loop can return a
+  **non-nil slice alongside a non-nil error** and callers must still
+  process it (§3.6, doc comment in `interfaces.go`).
+- A backend-native error must never leak through a grnoti interface
+  unwrapped — translate to a sentinel in `errors.go` first (see
+  Conventions below).
+- Postgres stores use `pgx/v5` + sqlc-generated code directly, not GORM
+  (§3.12).
+
 ## Testing philosophy: real local services, not mocks
 
 Every backend (MongoDB, PostgreSQL, Redis, Kafka) is tested against a real

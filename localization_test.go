@@ -219,6 +219,75 @@ func TestLocalizedTemplateEngine_BuildMessage_CompileErrorFallsBackToBaseEngine(
 	}
 }
 
+// TestLocalizedTemplateEngine_BuildMessage_ReusesCompiledTemplate is the
+// falsifying regression test for compileTemplate being re-run on every
+// BuildMessage call instead of once per distinct MessageTemplate: it
+// inspects the engine's own cache directly (same package) and asserts the
+// *compiledTemplate pointer is identical across two BuildMessage calls for
+// an unchanged localized template — proving the second call reused the
+// first call's compiled form rather than re-parsing.
+func TestLocalizedTemplateEngine_BuildMessage_ReusesCompiledTemplate(t *testing.T) {
+	localeStore := NewInMemoryLocalizationStore()
+	_ = localeStore.RegisterLocalizedTemplate(EventTypeSystemAlert, "es", MessageTemplate{
+		TitleTemplate: "Alerta", BodyTemplate: "{{.message}}",
+	})
+
+	engine := NewLocalizedTemplateEngine(NewTemplateEngine(), localeStore, NewStaticLocaleResolver("es")).(*localizedTemplateEngine)
+	ev := Event{EventID: "e", UserID: "u1", Type: EventTypeSystemAlert, Payload: map[string]string{"message": "hola"}}
+
+	if _, err := engine.BuildMessage(ev); err != nil {
+		t.Fatalf("BuildMessage (first call): %v", err)
+	}
+	engine.mu.RLock()
+	first := engine.cache["system_alert:es"].compiled
+	engine.mu.RUnlock()
+	if first == nil {
+		t.Fatal("cache has no entry after first BuildMessage call")
+	}
+
+	if _, err := engine.BuildMessage(ev); err != nil {
+		t.Fatalf("BuildMessage (second call): %v", err)
+	}
+	engine.mu.RLock()
+	second := engine.cache["system_alert:es"].compiled
+	engine.mu.RUnlock()
+	if second != first {
+		t.Fatal("BuildMessage recompiled an unchanged localized template instead of reusing the cached compiledTemplate")
+	}
+}
+
+// TestLocalizedTemplateEngine_BuildMessage_PicksUpUpdatedTemplate proves
+// the cache added to fix the re-compilation issue above doesn't trade one
+// bug for another: a template re-registered via
+// LocalizationStore.RegisterLocalizedTemplate after it was already cached
+// must still take effect on the next BuildMessage call, not serve stale
+// compiled content.
+func TestLocalizedTemplateEngine_BuildMessage_PicksUpUpdatedTemplate(t *testing.T) {
+	localeStore := NewInMemoryLocalizationStore()
+	_ = localeStore.RegisterLocalizedTemplate(EventTypeSystemAlert, "es", MessageTemplate{TitleTemplate: "Old Title", BodyTemplate: "ok"})
+
+	engine := NewLocalizedTemplateEngine(NewTemplateEngine(), localeStore, NewStaticLocaleResolver("es"))
+	ev := Event{EventID: "e", UserID: "u1", Type: EventTypeSystemAlert}
+
+	msg, err := engine.BuildMessage(ev)
+	if err != nil {
+		t.Fatalf("BuildMessage (before update): %v", err)
+	}
+	if msg.Title != "Old Title" {
+		t.Fatalf("BuildMessage (before update) = %+v, want Title=Old Title", msg)
+	}
+
+	_ = localeStore.RegisterLocalizedTemplate(EventTypeSystemAlert, "es", MessageTemplate{TitleTemplate: "New Title", BodyTemplate: "ok"})
+
+	msg, err = engine.BuildMessage(ev)
+	if err != nil {
+		t.Fatalf("BuildMessage (after update): %v", err)
+	}
+	if msg.Title != "New Title" {
+		t.Fatalf("BuildMessage (after update) = %+v, want Title=New Title (cache must not serve stale content)", msg)
+	}
+}
+
 func TestNewPreferencesLocaleResolver_DefaultsEmptyFallbackToEn(t *testing.T) {
 	r := NewPreferencesLocaleResolver(NewMemoryPreferencesStore(), "")
 	if got := r.GetDefaultLocale(); got != "en" {

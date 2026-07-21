@@ -89,7 +89,7 @@ func (s *cachedPreferencesStore) SavePreferences(ctx context.Context, prefs *Not
 func (s *cachedPreferencesStore) IsEventTypeEnabled(ctx context.Context, userID string, eventType EventType) (bool, error) {
 	prefs, err := s.GetPreferences(ctx, userID)
 	if err != nil {
-		if err == ErrPreferencesNotFound {
+		if errors.Is(err, ErrPreferencesNotFound) {
 			return true, nil
 		}
 		return false, fmt.Errorf("grnoti: is event type enabled for %s: %w", userID, err)

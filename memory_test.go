@@ -99,8 +99,8 @@ func TestMemoryPreferencesStore_NotFoundThenSave(t *testing.T) {
 func TestMemoryPreferencesStore_SavePreferences_EmptyUserID(t *testing.T) {
 	store := NewMemoryPreferencesStore()
 	err := store.SavePreferences(context.Background(), &NotificationPreferences{GlobalEnabled: true})
-	if err != ErrNoTargetSpecified {
-		t.Fatalf("SavePreferences(empty UserID) error = %v, want ErrNoTargetSpecified", err)
+	if err != ErrPreferencesUserIDRequired {
+		t.Fatalf("SavePreferences(empty UserID) error = %v, want ErrPreferencesUserIDRequired", err)
 	}
 }
 
