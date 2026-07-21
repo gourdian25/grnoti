@@ -1,5 +1,6 @@
 .
 ├── CHANGELOG.md
+├── CLAUDE.md
 ├── LICENSE
 ├── Makefile
 ├── README.md
@@ -26,6 +27,7 @@
 ├── dlq.postgres.go
 ├── dlq.postgres_test.go
 ├── docs/
+│   ├── architecture.md
 │   └── plan/
 │       └── grnoti-plan.md
 ├── docs.go
@@ -35,6 +37,8 @@
 ├── events_test.go
 ├── eventtypes.go
 ├── eventtypes_test.go
+├── example/
+│   └── main.go
 ├── experiment.go
 ├── experiment_test.go
 ├── experimentstore.postgres.go
@@ -82,4 +86,4 @@
 ├── workerpool.go
 └── workerpool_test.go
 
-4 directories, 78 files
+5 directories, 81 files
