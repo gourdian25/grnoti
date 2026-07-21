@@ -1,9 +1,13 @@
 -- File: internal/postgresdb/schema.sql
 --
--- Schema for grnoti's PostgreSQL-backed stores. Applied via each store's
--- own migrate step (see migrate.go) rather than a separate migration tool
--- — grnoti has no other schema-migration dependency, and CREATE TABLE IF
--- NOT EXISTS is sufficient for a library with one linear schema.
+-- Schema for grnoti's PostgreSQL-backed stores. Applied by connectPostgres
+-- (postgres.go) on every store connect, serialized by a Postgres advisory
+-- lock (applyPostgresSchema) so concurrent connects don't race on this
+-- DDL, with an opt-out via PostgresConfig.SkipSchemaEnsure for teams
+-- managing this schema through their own migration pipeline instead — see
+-- docs/postgres.md. grnoti has no other schema-migration dependency, and
+-- CREATE TABLE IF NOT EXISTS is sufficient for a library with one linear
+-- schema.
 
 CREATE TABLE IF NOT EXISTS grnoti_tokens (
     token        VARCHAR(512) PRIMARY KEY,

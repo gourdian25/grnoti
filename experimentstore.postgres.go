@@ -36,9 +36,10 @@ func experimentRowToDomain(r postgresdb.GrnotiExperiment) (*Experiment, error) {
 }
 
 type postgresExperimentStore struct {
-	pool    *pgxpool.Pool
-	queries *postgresdb.Queries
-	logger  Logger
+	pool     *pgxpool.Pool
+	queries  *postgresdb.Queries
+	logger   Logger
+	ownsPool bool
 
 	closed    atomic.Bool
 	closeOnce sync.Once
@@ -51,13 +52,13 @@ var _ ExperimentStore = (*postgresExperimentStore)(nil)
 // deterministic assignment algorithm itself lives in experiment.go/
 // cache.experiment.go, not here).
 func NewPostgresExperimentStore(cfg PostgresConfig) (ExperimentStore, error) {
-	pool, queries, err := connectPostgres(context.Background(), cfg, "ExperimentStore")
+	pool, queries, ownsPool, err := connectPostgres(context.Background(), cfg, "ExperimentStore")
 	if err != nil {
 		return nil, err
 	}
 	logger := OrNop(cfg.Logger)
 	logger.Infof("grnoti/postgres: experiment store connected")
-	return &postgresExperimentStore{pool: pool, queries: queries, logger: logger}, nil
+	return &postgresExperimentStore{pool: pool, queries: queries, logger: logger, ownsPool: ownsPool}, nil
 }
 
 func (s *postgresExperimentStore) CreateExperiment(ctx context.Context, experiment *Experiment) error {
@@ -156,7 +157,9 @@ func (s *postgresExperimentStore) ListExperiments(ctx context.Context) ([]*Exper
 func (s *postgresExperimentStore) Close() error {
 	s.closeOnce.Do(func() {
 		s.closed.Store(true)
-		s.pool.Close()
+		if s.ownsPool {
+			s.pool.Close()
+		}
 		s.logger.Infof("grnoti/postgres: experiment store closed")
 	})
 	return nil

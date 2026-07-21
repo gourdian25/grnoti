@@ -233,6 +233,31 @@ internal/postgresdb/schema.sql`) applied via `CREATE TABLE IF NOT EXISTS`
 on every connect — grnoti has one linear schema and no separate migration
 tool dependency.
 
+Each store's constructor originally dialed its own `*pgxpool.Pool` from
+`PostgresConfig.DSN`, with no way to share one pool across stores — fine
+in isolation, but a real backend wiring all four Postgres stores together
+would open four independent pools (and four independent schema-apply
+round-trips) against the same database. `PostgresConfig.Pool` now lets a
+caller inject an already-built `*pgxpool.Pool` instead of supplying a DSN;
+`connectPostgres` tracks whether it dialed the pool itself or received it
+externally (`ownsPool`), and every store's `Close()` only closes the pool
+when it dialed it — an injected, shared pool is never grnoti's to close.
+See [docs/postgres.md](postgres.md) for the full pattern (this is
+documentation, not a new exported connection-builder function — see that
+doc's own reasoning for keeping the pool-construction snippet
+application-side rather than growing grnoti's API surface for it).
+
+Sharing one pool across stores also reopened the schema-apply-on-every-
+connect behavior to a real race: `CREATE TABLE/INDEX IF NOT EXISTS` from
+multiple concurrent sessions against a brand-new database is not fully
+race-free in Postgres. `applyPostgresSchema` now wraps the schema exec in
+a Postgres advisory lock (`grnotiSchemaLockKey`, a fixed constant) so
+concurrent connects — multiple stores constructed from goroutines, or
+multiple service replicas racing on first boot — serialize instead of
+racing on catalog DDL. `PostgresConfig.SkipSchemaEnsure` opts a store out
+of schema application entirely, for teams managing grnoti's schema
+through their own migration pipeline instead.
+
 ## 4. Testing philosophy
 
 Every backend is tested against a real local instance — Docker containers

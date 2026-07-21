@@ -24,9 +24,10 @@ func tokenRowToDomain(r postgresdb.GrnotiToken) DeviceToken {
 }
 
 type postgresTokenStore struct {
-	pool    *pgxpool.Pool
-	queries *postgresdb.Queries
-	logger  Logger
+	pool     *pgxpool.Pool
+	queries  *postgresdb.Queries
+	logger   Logger
+	ownsPool bool
 
 	closed    atomic.Bool
 	closeOnce sync.Once
@@ -38,13 +39,13 @@ var _ TokenStore = (*postgresTokenStore)(nil)
 // the alternative to the primary MongoDB backend (tokenstore.mongo.go);
 // see docs/plan/grnoti-plan.md §6.
 func NewPostgresTokenStore(cfg PostgresConfig) (TokenStore, error) {
-	pool, queries, err := connectPostgres(context.Background(), cfg, "TokenStore")
+	pool, queries, ownsPool, err := connectPostgres(context.Background(), cfg, "TokenStore")
 	if err != nil {
 		return nil, err
 	}
 	logger := OrNop(cfg.Logger)
 	logger.Infof("grnoti/postgres: token store connected")
-	return &postgresTokenStore{pool: pool, queries: queries, logger: logger}, nil
+	return &postgresTokenStore{pool: pool, queries: queries, logger: logger, ownsPool: ownsPool}, nil
 }
 
 func (s *postgresTokenStore) GetActiveTokens(ctx context.Context, userID string) ([]DeviceToken, error) {
@@ -139,7 +140,9 @@ func (s *postgresTokenStore) DeleteToken(ctx context.Context, token string) erro
 func (s *postgresTokenStore) Close() error {
 	s.closeOnce.Do(func() {
 		s.closed.Store(true)
-		s.pool.Close()
+		if s.ownsPool {
+			s.pool.Close()
+		}
 		s.logger.Infof("grnoti/postgres: token store closed")
 	})
 	return nil

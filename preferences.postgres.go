@@ -32,9 +32,10 @@ func preferencesRowToDomain(r postgresdb.GrnotiPreference) (*NotificationPrefere
 }
 
 type postgresPreferencesStore struct {
-	pool    *pgxpool.Pool
-	queries *postgresdb.Queries
-	logger  Logger
+	pool     *pgxpool.Pool
+	queries  *postgresdb.Queries
+	logger   Logger
+	ownsPool bool
 
 	closed    atomic.Bool
 	closeOnce sync.Once
@@ -47,13 +48,13 @@ var _ PreferencesStore = (*postgresPreferencesStore)(nil)
 // NewCachedPreferencesStore for the Redis read-through cache in front of
 // it).
 func NewPostgresPreferencesStore(cfg PostgresConfig) (PreferencesStore, error) {
-	pool, queries, err := connectPostgres(context.Background(), cfg, "PreferencesStore")
+	pool, queries, ownsPool, err := connectPostgres(context.Background(), cfg, "PreferencesStore")
 	if err != nil {
 		return nil, err
 	}
 	logger := OrNop(cfg.Logger)
 	logger.Infof("grnoti/postgres: preferences store connected")
-	return &postgresPreferencesStore{pool: pool, queries: queries, logger: logger}, nil
+	return &postgresPreferencesStore{pool: pool, queries: queries, logger: logger, ownsPool: ownsPool}, nil
 }
 
 func (s *postgresPreferencesStore) GetPreferences(ctx context.Context, userID string) (*NotificationPreferences, error) {
@@ -108,7 +109,9 @@ func (s *postgresPreferencesStore) IsEventTypeEnabled(ctx context.Context, userI
 func (s *postgresPreferencesStore) Close() error {
 	s.closeOnce.Do(func() {
 		s.closed.Store(true)
-		s.pool.Close()
+		if s.ownsPool {
+			s.pool.Close()
+		}
 		s.logger.Infof("grnoti/postgres: preferences store closed")
 	})
 	return nil

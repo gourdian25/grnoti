@@ -28,8 +28,9 @@
 ├── dlq.postgres_test.go
 ├── docs/
 │   ├── architecture.md
-│   └── plan/
-│       └── grnoti-plan.md
+│   ├── plan/
+│   │   └── grnoti-plan.md
+│   └── postgres.md
 ├── docs.go
 ├── errors.go
 ├── errors_test.go
@@ -38,6 +39,7 @@
 ├── eventtypes.go
 ├── eventtypes_test.go
 ├── example/
+│   ├── example
 │   └── main.go
 ├── experiment.go
 ├── experiment_test.go
@@ -86,4 +88,4 @@
 ├── workerpool.go
 └── workerpool_test.go
 
-5 directories, 81 files
+5 directories, 83 files

@@ -25,6 +25,17 @@ All notable changes to this project are documented in this file.
 - PostgreSQL backends (pgx/v5 + sqlc): `TokenStore`, `PreferencesStore`,
   `ExperimentStore`, `DLQHandler` (atomic claim via `SELECT ... FOR UPDATE
   SKIP LOCKED`).
+- `PostgresConfig.Pool`: inject an already-built `*pgxpool.Pool` instead
+  of `DSN`, so multiple Postgres stores can share one pool instead of
+  each dialing its own — see `docs/postgres.md` for the pattern. Every
+  store's `Close()` now only closes a pool it dialed itself, never one
+  supplied via `Pool`. `PostgresConfig.SkipSchemaEnsure` opts a store out
+  of schema application for teams managing it via their own migration
+  pipeline; `PostgresConfig.ConnectTimeout` makes the previously-hardcoded
+  10-second connect timeout configurable in `DSN` mode.
+- `docs/postgres.md`: the shared-pool wiring pattern, `Close()` ownership
+  rules, and schema-management guidance for using grnoti's Postgres
+  stores in a real backend.
 - Cross-backend contract tests: every `TokenStore`/`PreferencesStore`/
   `ExperimentStore`/`DLQHandler` implementation runs the same behavioral
   contract suite.
@@ -103,6 +114,16 @@ of each:
   `cache.preferences.go` so a future implementation is free to add
   `%w`-wrapped context without silently breaking preferences-defaulting
   logic.
+- `connectPostgres`'s schema application (`CREATE TABLE/INDEX IF NOT
+  EXISTS` against `internal/postgresdb/schema.sql`) raced under
+  concurrent connects — multiple stores constructed from goroutines, or
+  multiple service replicas booting simultaneously against a fresh
+  database, could hit a duplicate-catalog-entry error, since Postgres's
+  `IF NOT EXISTS` DDL isn't fully race-free across concurrent sessions.
+  `applyPostgresSchema` now serializes it behind a Postgres advisory lock.
+  Separately, `internal/postgresdb/schema.sql`'s header comment pointed
+  at a `migrate.go` that doesn't exist in this repo; corrected to describe
+  the actual mechanism.
 
 ### Repository scaffolding
 

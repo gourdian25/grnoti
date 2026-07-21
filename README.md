@@ -64,6 +64,35 @@ narrated walkthrough — `go run ./example`, no external services required
 instead of calling FCM). It also documents the exact one-line swap for
 every real backend constructor.
 
+## Postgres: sharing one pool across stores
+
+`NewPostgresTokenStore`, `NewPostgresPreferencesStore`,
+`NewPostgresExperimentStore`, and `NewPostgresDLQHandler` each take a
+`PostgresConfig`. Giving each one its own `DSN` means each dials its own
+pool — fine for one store, wasteful for four (`MaxConns` × 4 connections,
+not × 1). `PostgresConfig.Pool` lets you build one `*pgxpool.Pool`
+yourself and inject it into every store instead:
+
+```go
+pool, err := pgxpool.NewWithConfig(ctx, poolCfg) // your own bootstrap code
+if err != nil {
+    log.Fatal(err)
+}
+defer pool.Close() // grnoti never closes a Pool it didn't dial itself
+
+tokenStore, err := grnoti.NewPostgresTokenStore(grnoti.PostgresConfig{Pool: pool})
+preferencesStore, err := grnoti.NewPostgresPreferencesStore(grnoti.PostgresConfig{
+    Pool: pool, SkipSchemaEnsure: true, // schema already applied by tokenStore above
+})
+```
+
+`DSN` and `Pool` are mutually exclusive — set exactly one.
+`PostgresConfig.SkipSchemaEnsure` skips grnoti's built-in schema
+application for stores managed by your own migration pipeline instead.
+See [docs/postgres.md](docs/postgres.md) for the full pattern, `Close()`
+ownership rules, and the concurrency-safety guarantee (schema application
+is now serialized via a Postgres advisory lock).
+
 ## Why storage-agnostic interfaces
 
 Every capability — token storage, preferences, dead-letter retry, rate

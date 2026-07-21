@@ -61,36 +61,87 @@ func pgInt32(n int) int32 {
 //go:embed internal/postgresdb/schema.sql
 var postgresSchemaSQL string
 
+// grnotiSchemaLockKey is a fixed Postgres advisory-lock key used by
+// applyPostgresSchema to serialize schema application across concurrent
+// callers — e.g. multiple stores constructed from goroutines at startup,
+// or multiple service replicas racing on first boot against a fresh
+// database, where concurrent CREATE TABLE/INDEX IF NOT EXISTS statements
+// are not fully race-free in Postgres. Advisory locks are global to the
+// database, not namespaced per application, so an unrelated app that
+// happens to choose this same int64 key could in principle collide with
+// it — an accepted, extremely unlikely risk, not worth a namespacing
+// scheme for a single fixed lock.
+const grnotiSchemaLockKey int64 = 7_927_100_419
+
 // PostgresConfig is the common connection configuration shared by every
 // Postgres-backed store.
 type PostgresConfig struct {
-	// DSN is a standard libpq/pgx connection string. Required.
+	// DSN is a standard libpq/pgx connection string. Exactly one of DSN
+	// or Pool must be set.
 	DSN string
+	// Pool, if set, is used directly instead of dialing a new pool from
+	// DSN — lets multiple grnoti Postgres stores (or the rest of your
+	// backend) share one pgxpool.Pool instead of each store opening its
+	// own. grnoti never closes a Pool it did not create itself: every
+	// store's Close() only closes the pool when it was dialed from DSN.
+	// Exactly one of DSN or Pool must be set. See docs/postgres.md for
+	// the recommended shared-pool pattern.
+	Pool *pgxpool.Pool
 	// MaxConns caps the pgxpool connection pool size. 0 means use pgxpool's
-	// own default.
+	// own default. Ignored when Pool is set — tune the pool yourself
+	// before passing it in.
 	MaxConns int32
 	// MinConns keeps at least this many connections open. 0 means use
-	// pgxpool's own default.
+	// pgxpool's own default. Ignored when Pool is set.
 	MinConns int32
 	// MaxConnLifetime bounds how long a pooled connection may be reused
 	// before being recycled. 0 means pgxpool's own default (unlimited).
+	// Ignored when Pool is set.
 	MaxConnLifetime time.Duration
+	// ConnectTimeout bounds dialing and the initial Ping when connecting
+	// from DSN. 0 means 10 seconds. Ignored when Pool is set (the Ping
+	// against an already-established Pool uses the 10-second default
+	// unconditionally).
+	ConnectTimeout time.Duration
+	// SkipSchemaEnsure, if true, skips applying grnoti's embedded schema
+	// on this connect call — for teams that manage the schema through
+	// their own migration pipeline instead of grnoti's built-in
+	// CREATE TABLE IF NOT EXISTS. See docs/postgres.md.
+	SkipSchemaEnsure bool
 	// Logger receives optional diagnostic messages. A nil Logger disables
 	// logging.
 	Logger Logger
 }
 
-// connectPostgres opens a pgxpool.Pool per cfg, validates connectivity via
-// Ping, and applies the embedded schema before returning — shared by every
+// connectPostgres resolves cfg to a pgxpool.Pool — either dialing a new
+// one from cfg.DSN or reusing cfg.Pool directly — validates connectivity
+// via Ping, applies the embedded schema unless cfg.SkipSchemaEnsure, and
+// returns whether the pool is owned by this call: true only when dialed
+// from DSN here, false when cfg.Pool was supplied externally, since an
+// externally-supplied pool is never grnoti's to close. Shared by every
 // Postgres store's own constructor.
-func connectPostgres(ctx context.Context, cfg PostgresConfig, component string) (*pgxpool.Pool, *postgresdb.Queries, error) {
-	if cfg.DSN == "" {
-		return nil, nil, fmt.Errorf("grnoti/postgres: DSN is required for %s", component)
+func connectPostgres(ctx context.Context, cfg PostgresConfig, component string) (*pgxpool.Pool, *postgresdb.Queries, bool, error) {
+	if (cfg.DSN == "") == (cfg.Pool == nil) {
+		return nil, nil, false, fmt.Errorf("grnoti/postgres: exactly one of DSN or Pool is required for %s", component)
+	}
+
+	if cfg.Pool != nil {
+		pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if err := cfg.Pool.Ping(pingCtx); err != nil {
+			return nil, nil, false, fmt.Errorf("grnoti/postgres: ping: %w", errors.Join(err, ErrBackendUnavailable))
+		}
+		if !cfg.SkipSchemaEnsure {
+			if err := applyPostgresSchema(ctx, cfg.Pool); err != nil {
+				return nil, nil, false, fmt.Errorf("grnoti/postgres: apply schema: %w", err)
+			}
+		}
+		return cfg.Pool, postgresdb.New(cfg.Pool), false, nil
 	}
 
 	poolCfg, err := pgxpool.ParseConfig(cfg.DSN)
 	if err != nil {
-		return nil, nil, fmt.Errorf("grnoti/postgres: parse DSN: %w", err)
+		return nil, nil, false, fmt.Errorf("grnoti/postgres: parse DSN: %w", err)
 	}
 	if cfg.MaxConns > 0 {
 		poolCfg.MaxConns = cfg.MaxConns
@@ -102,21 +153,56 @@ func connectPostgres(ctx context.Context, cfg PostgresConfig, component string) 
 		poolCfg.MaxConnLifetime = cfg.MaxConnLifetime
 	}
 
-	connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	timeout := cfg.ConnectTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	connectCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	pool, err := pgxpool.NewWithConfig(connectCtx, poolCfg)
 	if err != nil {
-		return nil, nil, fmt.Errorf("grnoti/postgres: connect: %w", errors.Join(err, ErrBackendUnavailable))
+		return nil, nil, false, fmt.Errorf("grnoti/postgres: connect: %w", errors.Join(err, ErrBackendUnavailable))
 	}
 	if err := pool.Ping(connectCtx); err != nil {
 		pool.Close()
-		return nil, nil, fmt.Errorf("grnoti/postgres: ping: %w", errors.Join(err, ErrBackendUnavailable))
+		return nil, nil, false, fmt.Errorf("grnoti/postgres: ping: %w", errors.Join(err, ErrBackendUnavailable))
 	}
-	if _, err := pool.Exec(connectCtx, postgresSchemaSQL); err != nil {
-		pool.Close()
-		return nil, nil, fmt.Errorf("grnoti/postgres: apply schema: %w", err)
+	if !cfg.SkipSchemaEnsure {
+		if err := applyPostgresSchema(connectCtx, pool); err != nil {
+			pool.Close()
+			return nil, nil, false, fmt.Errorf("grnoti/postgres: apply schema: %w", err)
+		}
 	}
 
-	return pool, postgresdb.New(pool), nil
+	return pool, postgresdb.New(pool), true, nil
+}
+
+// applyPostgresSchema applies the embedded schema (CREATE TABLE/INDEX IF
+// NOT EXISTS) against pool, serialized by a Postgres session-level
+// advisory lock (grnotiSchemaLockKey) so concurrent callers apply it one
+// at a time instead of racing on catalog DDL. The lock/exec/unlock
+// sequence runs on a single acquired connection, since advisory locks are
+// session-scoped, and is unlocked explicitly before the connection is
+// released back to the pool — a released pooled connection is reused,
+// not reset, so the lock would otherwise leak onto whichever caller
+// acquires that connection next.
+func applyPostgresSchema(ctx context.Context, pool *pgxpool.Pool) error {
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", grnotiSchemaLockKey); err != nil {
+		return fmt.Errorf("acquire schema lock: %w", err)
+	}
+	defer func() {
+		_, _ = conn.Exec(ctx, "SELECT pg_advisory_unlock($1)", grnotiSchemaLockKey)
+	}()
+
+	if _, err := conn.Exec(ctx, postgresSchemaSQL); err != nil {
+		return err
+	}
+	return nil
 }

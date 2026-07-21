@@ -56,6 +56,7 @@ type postgresDLQHandler struct {
 	retryDelay    time.Duration
 	maxRetryDelay time.Duration
 	logger        Logger
+	ownsPool      bool
 
 	closed    atomic.Bool
 	closeOnce sync.Once
@@ -74,7 +75,7 @@ var _ DLQHandler = (*postgresDLQHandler)(nil)
 // worker replicas). See docs/plan/grnoti-plan.md §1.3 and
 // internal/postgresdb/queries/dlq.sql.
 func NewPostgresDLQHandler(cfg PostgresDLQHandlerConfig) (DLQHandler, error) {
-	pool, queries, err := connectPostgres(context.Background(), cfg.PostgresConfig, "DLQHandler")
+	pool, queries, ownsPool, err := connectPostgres(context.Background(), cfg.PostgresConfig, "DLQHandler")
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +88,7 @@ func NewPostgresDLQHandler(cfg PostgresDLQHandlerConfig) (DLQHandler, error) {
 	return &postgresDLQHandler{
 		pool: pool, queries: queries,
 		maxRetries: maxRetries, retryDelay: cfg.RetryDelay, maxRetryDelay: cfg.MaxRetryDelay,
-		logger: logger,
+		logger: logger, ownsPool: ownsPool,
 	}, nil
 }
 
@@ -226,7 +227,9 @@ func (h *postgresDLQHandler) PurgeExpiredEvents(ctx context.Context, maxAge time
 func (h *postgresDLQHandler) Close() error {
 	h.closeOnce.Do(func() {
 		h.closed.Store(true)
-		h.pool.Close()
+		if h.ownsPool {
+			h.pool.Close()
+		}
 		h.logger.Infof("grnoti/postgres: dlq handler closed")
 	})
 	return nil

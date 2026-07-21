@@ -5,6 +5,8 @@ package grnoti
 import (
 	"context"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const testPostgresDSN = "host=localhost user=postgres_user password=postgres_password dbname=grnoti_test port=5432 sslmode=disable"
@@ -138,6 +140,55 @@ func TestPostgresTokenStore_GenericQueryError(t *testing.T) {
 	if err := store.DeleteToken(ctx, "t1"); err == nil {
 		t.Error("DeleteToken(canceled ctx) = nil error, want non-nil")
 	}
+}
+
+// TestPostgresStores_SharedPool_CloseDoesNotAffectSiblingStore is the
+// regression test for the ownership fix: two stores built from one
+// injected *pgxpool.Pool (PostgresConfig.Pool) must not close that pool
+// out from under each other — only a store that dialed its own pool from
+// DSN should ever close it.
+func TestPostgresStores_SharedPool_CloseDoesNotAffectSiblingStore(t *testing.T) {
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, testPostgresDSN)
+	if err != nil {
+		t.Skipf("PostgreSQL not available, skipping: %v", err)
+	}
+	defer pool.Close()
+	if err := pool.Ping(ctx); err != nil {
+		t.Skipf("PostgreSQL not available, skipping: %v", err)
+	}
+
+	tokenStore, err := NewPostgresTokenStore(PostgresConfig{Pool: pool})
+	if err != nil {
+		t.Fatalf("NewPostgresTokenStore(Pool: pool): %v", err)
+	}
+	preferencesStore, err := NewPostgresPreferencesStore(PostgresConfig{Pool: pool})
+	if err != nil {
+		t.Fatalf("NewPostgresPreferencesStore(Pool: pool): %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(ctx, "DELETE FROM grnoti_tokens")
+		pool.Exec(ctx, "DELETE FROM grnoti_preferences")
+	})
+
+	if err := tokenStore.Close(); err != nil {
+		t.Fatalf("tokenStore.Close(): %v", err)
+	}
+
+	// The shared pool, and the sibling store still using it, must remain
+	// usable after tokenStore.Close() — proving Close() didn't close the
+	// pool it doesn't own.
+	if err := preferencesStore.SavePreferences(ctx, &NotificationPreferences{UserID: "shared-pool-user", GlobalEnabled: true}); err != nil {
+		t.Fatalf("SavePreferences after sibling store's Close(): %v", err)
+	}
+	if _, err := preferencesStore.GetPreferences(ctx, "shared-pool-user"); err != nil {
+		t.Fatalf("GetPreferences after sibling store's Close(): %v", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("pool.Ping() after sibling store's Close(): %v, want the shared pool to still be open", err)
+	}
+
+	_ = preferencesStore.Close()
 }
 
 func TestPostgresTokenStore_AfterClose_EveryMethodReturnsErrClosed(t *testing.T) {

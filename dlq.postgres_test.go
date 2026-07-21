@@ -260,8 +260,8 @@ func TestDlqRowToDomain_MalformedEventData(t *testing.T) {
 	}
 	ctx := context.Background()
 	_, err := hh.pool.Exec(ctx, `INSERT INTO grnoti_dlq
-		(event_id, event_data, failure_reason, max_retries, first_failure_at, last_attempt_at, next_retry_at, status)
-		VALUES ($1, '[1,2,3]', 'boom', 3, now(), now(), now(), 'pending')`, "pge-malformed")
+		(event_id, event_data, failure_reason, max_retries, first_failure_at, last_attempt_at, next_retry_at, status, created_at, updated_at)
+		VALUES ($1, '[1,2,3]', 'boom', 3, now(), now(), now(), 'pending', now(), now())`, "pge-malformed")
 	if err != nil {
 		t.Fatalf("raw insert: %v", err)
 	}

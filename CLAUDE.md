@@ -57,6 +57,11 @@ it names):
   Conventions below).
 - Postgres stores use `pgx/v5` + sqlc-generated code directly, not GORM
   (§3.12).
+- Every Postgres store's `PostgresConfig` accepts either `DSN` (dials its
+  own pool) or `Pool` (reuses an externally-supplied `*pgxpool.Pool` —
+  the shared-pool pattern for wiring multiple stores off one backend
+  connection pool). `Close()` only closes a pool the store dialed itself
+  — never one passed in via `Pool`. See [docs/postgres.md](docs/postgres.md).
 
 ## Testing philosophy: real local services, not mocks
 
@@ -90,7 +95,11 @@ docker run -d --name grnoti-kafka -p 9092:9092 apache/kafka:3.7.0
 
 Postgres needs no separate migration step: every Postgres-backed store's
 constructor applies `internal/postgresdb/schema.sql` via `CREATE TABLE IF
-NOT EXISTS` on connect (see `connectPostgres` in `postgres.go`). Mongo
+NOT EXISTS` on connect (see `connectPostgres` in `postgres.go`), guarded
+by a Postgres advisory lock so concurrent connects don't race on the DDL
+— opt out per store with `PostgresConfig.SkipSchemaEnsure` if you manage
+this schema through your own migration pipeline instead (see
+[docs/postgres.md](docs/postgres.md)). Mongo
 indexes are similarly ensured on connect by each Mongo store's own
 constructor.
 
