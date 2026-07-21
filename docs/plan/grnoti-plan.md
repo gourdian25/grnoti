@@ -1034,3 +1034,31 @@ Stage 0, on approval of this plan.
     doesn't immediately fail `make coverage-check`.
   - `golangci-lint run` still reports 0 issues after all of the above; `go
     build`/`go vet`/`gofmt -l` all clean.
+- **Stage 13 — Polish (final stage)**: `example/main.go`, a complete,
+  dependency-free, runnable walkthrough (`go run ./example`) using
+  in-memory backends plus a stdout-logging `PushDispatcher` — restructured
+  once during writing from a flat `main()` into `main()`/`run() error` to
+  fix a real `gocritic` `exitAfterDefer` finding (a `log.Fatalf` after an
+  already-registered `defer` would have skipped that cleanup; the
+  `run() error` split is the standard fix, not a suppression).
+  `docs/architecture.md`: the interface/backend matrix and every design
+  decision from §3 of this log consolidated into one reference, including
+  a corrected retelling of the experiment-assignment concurrency point —
+  the confirmed data race was in the *reference* implementation
+  (§9 item 2), not one `-race` ever caught in grnoti's own code;
+  `TestDeterministicExperimentEngine_ConcurrentAssignVariant` is the
+  falsifying test proving grnoti's design doesn't reproduce it, worth
+  getting right rather than implying grnoti shipped a race and fixed it
+  later. `CLAUDE.md`: backend docker commands, test-scoping patterns, the
+  `bark`/`internal/postgresdb` gotcha (see the post-Stage-12 entry above)
+  written down so it isn't rediscovered a third time, and repo
+  conventions. `README.md` rewritten with an accurate, compilable
+  quickstart (the first draft inlined two-value constructor calls
+  — `NewMongoTokenStore`/`NewFCMDispatcher` — directly as single-value
+  struct fields, which doesn't compile; fixed by declaring them with
+  explicit error handling first, matching `example/main.go`'s actual
+  structure). `CHANGELOG.md` populated with entries for Stages 0-13.
+  `Makefile` gained `precommit` (fmt+vet+lint+race+coverage-check) and
+  `prerelease` (precommit+goreleaser-check) targets; both run clean
+  end-to-end, including a full `goreleaser release --snapshot --clean`
+  dry run.

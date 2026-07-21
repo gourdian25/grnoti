@@ -1,6 +1,6 @@
 # File: Makefile
 
-.PHONY: help test race coverage coverage-summary coverage-check bench lint vet fmt clean deps tag release goreleaser-check guard-version
+.PHONY: help test race coverage coverage-summary coverage-check bench lint vet fmt clean deps precommit prerelease tag release goreleaser-check guard-version
 
 GO := go
 MODULE := github.com/gourdian25/grnoti
@@ -21,6 +21,8 @@ help:
 	@echo "  make fmt              Format code"
 	@echo "  make clean            Clean build artifacts"
 	@echo "  make deps             Verify and tidy dependencies"
+	@echo "  make precommit        fmt + vet + lint + race + coverage-check — run before every commit"
+	@echo "  make prerelease       precommit + goreleaser-check — run before tagging a release"
 	@echo "  make tag VERSION=vX.Y.Z         Create and push a git tag"
 	@echo "  make release VERSION=vX.Y.Z     Tag, push, and run goreleaser release --clean"
 	@echo "  make goreleaser-check           Dry run: validate config + snapshot release (no tag/push)"
@@ -102,6 +104,19 @@ deps:
 	@echo "Tidying dependencies..."
 	$(GO) mod tidy
 	@echo "Dependency verification complete"
+
+# precommit is the standard local gate before every commit: format, then
+# every static/dynamic check a CI run would also do, in cheapest-first
+# order so a fast failure (fmt/vet/lint) doesn't wait on the slow ones
+# (race, which spins up real Mongo/Postgres/Redis/Kafka backend tests).
+precommit: fmt vet lint race coverage-check
+	@echo "precommit checks passed"
+
+# prerelease adds goreleaser's own config/build validation on top of
+# precommit — run this before `make tag`/`make release`, not as a
+# replacement for precommit during normal development.
+prerelease: precommit goreleaser-check
+	@echo "prerelease checks passed"
 
 guard-version:
 	@if [ -z "$(VERSION)" ]; then \
