@@ -107,12 +107,15 @@ matrix and the reasoning behind each design decision.
 
 ## Development
 
-See [CLAUDE.md](CLAUDE.md) for backend setup, test scoping, and
-conventions. Short version:
-
 ```sh
+make docker-up   # start the shared Postgres/Redis/Mongo/Kafka test containers
 make precommit   # fmt + vet + lint + race + coverage-check
+make docker-down # stop them when you're done
 ```
+
+These containers are shared with graudit, grcache, and gourdiantoken (each
+gets its own database/keyspace) — see [CLAUDE.md](CLAUDE.md) for backend
+setup, test scoping, and conventions.
 
 ## License
 

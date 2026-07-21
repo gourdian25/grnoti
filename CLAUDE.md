@@ -78,19 +78,41 @@ tests that matter for a given change need the real thing.
 
 ### Starting the backends
 
-```sh
-docker run -d --name grnoti-mongo -p 27017:27017 mongo:7
+These containers are **shared across the whole gourdian25 workspace** (grnoti,
+graudit, grcache, gourdiantoken all test against the same running Postgres/
+Redis/Mongo/Kafka/Memcached instances, each using its own database/keyspace/
+DB-index) — not grnoti-exclusive despite the `gourdian-*` naming below.
 
-docker run -d --name grnoti-postgres -p 5432:5432 \
+```sh
+docker run -d --name gourdian-postgres -p 5432:5432 \
   -e POSTGRES_USER=postgres_user \
   -e POSTGRES_PASSWORD=postgres_password \
   -e POSTGRES_DB=grnoti_test \
   postgres:16
+# other repos' own databases (graudit_test, grcache_test, gourdiantoken_test)
+# are created the same way inside this same container — see each repo's own
+# CLAUDE.md.
 
-docker run -d --name grnoti-redis -p 6379:6379 redis:7
+docker run -d --name gourdian-redis -p 6379:6379 \
+  redis:7 --requirepass redis_password
+# grnoti uses DB 0 (the default); grcache uses DB 14, gourdiantoken uses DB 15.
+
+# Mongo requires a keyFile when --replSet is combined with auth, even for a
+# single-node set — see docs/postgres.md-equivalent Mongo note, or graudit's
+# CLAUDE.md for the full keyfile-generation steps.
+docker volume create gourdian-mongo-keyfile
+docker run --rm -v gourdian-mongo-keyfile:/keyfile-dir mongo:7 bash -c \
+  "openssl rand -base64 756 > /keyfile-dir/mongo-keyfile && chmod 400 /keyfile-dir/mongo-keyfile && chown 999:999 /keyfile-dir/mongo-keyfile"
+docker run -d --name gourdian-mongo-auth -p 27018:27017 \
+  -e MONGO_INITDB_ROOT_USERNAME=root \
+  -e MONGO_INITDB_ROOT_PASSWORD=mongo_password \
+  -v gourdian-mongo-keyfile:/etc/mongo-keyfile-dir \
+  mongo:7 --replSet rs0 --keyFile /etc/mongo-keyfile-dir/mongo-keyfile
+docker exec gourdian-mongo-auth mongosh -u root -p mongo_password \
+  --authenticationDatabase admin --eval 'rs.initiate()'
 
 # KRaft mode, single broker, no Zookeeper needed
-docker run -d --name grnoti-kafka -p 9092:9092 apache/kafka:3.7.0
+docker run -d --name gourdian-kafka -p 9092:9092 apache/kafka:3.7.0
 ```
 
 Postgres needs no separate migration step: every Postgres-backed store's
@@ -108,9 +130,9 @@ file if these ever drift):
 
 | Backend  | Value |
 |----------|-------|
-| Mongo    | `mongodb://localhost:27017` |
+| Mongo    | `mongodb://root:mongo_password@localhost:27018/?replicaSet=rs0&authSource=admin&directConnection=true`, database `grnoti_test` — **not yet wired into the Mongo store code**, which still assumes the old no-auth standalone shape; tracked as pending work to bring it onto this shared standard |
 | Postgres | `host=localhost user=postgres_user password=postgres_password dbname=grnoti_test port=5432 sslmode=disable` |
-| Redis    | `localhost:6379` |
+| Redis    | `localhost:6379`, password `redis_password` — **not yet wired in**; the rate-limiter test constants still assume no password, tracked as pending work alongside the Mongo update above |
 | Kafka    | `localhost:9092` |
 
 ### Scoping a test run to one backend while iterating

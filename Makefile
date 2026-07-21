@@ -1,6 +1,6 @@
 # File: Makefile
 
-.PHONY: help test race coverage coverage-summary coverage-check bench lint vet fmt clean deps precommit prerelease tag release goreleaser-check guard-version
+.PHONY: help test race coverage coverage-summary coverage-check bench lint vet fmt clean deps docker-up docker-down precommit prerelease tag release goreleaser-check guard-version
 
 GO := go
 MODULE := github.com/gourdian25/grnoti
@@ -21,6 +21,8 @@ help:
 	@echo "  make fmt              Format code"
 	@echo "  make clean            Clean build artifacts"
 	@echo "  make deps             Verify and tidy dependencies"
+	@echo "  make docker-up        Start the shared Postgres/Redis/Mongo/Kafka test containers (idempotent)"
+	@echo "  make docker-down      Stop those containers (state preserved for a fast restart)"
 	@echo "  make precommit        fmt + vet + lint + race + coverage-check — run before every commit"
 	@echo "  make prerelease       precommit + goreleaser-check — run before tagging a release"
 	@echo "  make tag VERSION=vX.Y.Z         Create and push a git tag"
@@ -104,6 +106,42 @@ deps:
 	@echo "Tidying dependencies..."
 	$(GO) mod tidy
 	@echo "Dependency verification complete"
+
+# docker-up is idempotent: safe to run repeatedly, and safe to run
+# alongside gourdiantoken/grcache/graudit's own `make docker-up` since
+# every gourdian25 repo shares these same container names/ports (see
+# CLAUDE.md) — each just gets its own database/keyspace inside them.
+# Kafka and the Postgres/Redis auth needed here are grnoti-specific (no
+# other repo needs Kafka); Mongo is provisioned but grnoti's own store
+# code doesn't speak auth yet (tracked separately, see CLAUDE.md).
+docker-up:
+	@echo "Starting shared test containers..."
+	@docker inspect gourdian-postgres >/dev/null 2>&1 || docker run -d --name gourdian-postgres -p 5432:5432 \
+		-e POSTGRES_USER=postgres_user -e POSTGRES_PASSWORD=postgres_password -e POSTGRES_DB=grnoti_test postgres:16
+	@docker start gourdian-postgres >/dev/null 2>&1 || true
+	@docker inspect gourdian-redis >/dev/null 2>&1 || docker run -d --name gourdian-redis -p 6379:6379 redis:7 --requirepass redis_password
+	@docker start gourdian-redis >/dev/null 2>&1 || true
+	@docker volume create gourdian-mongo-keyfile >/dev/null
+	@docker inspect gourdian-mongo-auth >/dev/null 2>&1 || (docker run --rm -v gourdian-mongo-keyfile:/keyfile-dir mongo:7 bash -c "openssl rand -base64 756 > /keyfile-dir/mongo-keyfile && chmod 400 /keyfile-dir/mongo-keyfile && chown 999:999 /keyfile-dir/mongo-keyfile" && docker run -d --name gourdian-mongo-auth -p 27018:27017 -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD=mongo_password -v gourdian-mongo-keyfile:/etc/mongo-keyfile-dir mongo:7 --replSet rs0 --keyFile /etc/mongo-keyfile-dir/mongo-keyfile)
+	@docker start gourdian-mongo-auth >/dev/null 2>&1 || true
+	@docker inspect gourdian-kafka >/dev/null 2>&1 || docker run -d --name gourdian-kafka -p 9092:9092 apache/kafka:3.7.0
+	@docker start gourdian-kafka >/dev/null 2>&1 || true
+	@echo "Waiting for Postgres..."
+	@until docker exec gourdian-postgres pg_isready -U postgres_user >/dev/null 2>&1; do sleep 1; done
+	@docker exec gourdian-postgres psql -U postgres_user -d postgres -tc "SELECT 1 FROM pg_database WHERE datname = 'grnoti_test'" | grep -q 1 || \
+		docker exec gourdian-postgres psql -U postgres_user -d postgres -c "CREATE DATABASE grnoti_test"
+	@echo "Waiting for Redis..."
+	@until docker exec gourdian-redis redis-cli -a redis_password ping 2>/dev/null | grep -q PONG; do sleep 1; done
+	@echo "Waiting for Mongo (auth + replica set)..."
+	@until docker exec gourdian-mongo-auth mongosh --quiet -u root -p mongo_password --authenticationDatabase admin --eval 'db.runCommand({ping:1})' >/dev/null 2>&1; do sleep 1; done
+	@docker exec gourdian-mongo-auth mongosh --quiet -u root -p mongo_password --authenticationDatabase admin --eval 'rs.initiate()' >/dev/null 2>&1 || true
+	@echo "Waiting for Kafka..."
+	@for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do docker exec gourdian-kafka /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1 && break; sleep 2; done
+	@echo "Docker test infrastructure ready (postgres/redis/mongo-auth/kafka)"
+
+docker-down:
+	@docker stop gourdian-postgres gourdian-redis gourdian-mongo-auth gourdian-kafka 2>/dev/null || true
+	@echo "Stopped (containers preserved for a fast restart via 'make docker-up')"
 
 # precommit is the standard local gate before every commit: format, then
 # every static/dynamic check a CI run would also do, in cheapest-first
