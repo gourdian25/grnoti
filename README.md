@@ -9,9 +9,34 @@ storage-agnostic interfaces.
 
 Status: feature-complete per the 14-stage build plan
 ([docs/plan/grnoti-plan.md](docs/plan/grnoti-plan.md)), pre-tagged-release.
-`golangci-lint run` reports 0 issues; test coverage is ~95%, verified
-against real local MongoDB/PostgreSQL/Redis/Kafka instances (see
+`golangci-lint run` reports 0 issues; test coverage is 95.1% on the root
+package, enforced by a 95% gate (`make coverage-check`), verified against
+real local MongoDB/PostgreSQL/Redis/Kafka instances (see
 [CLAUDE.md](CLAUDE.md) for the docker setup).
+
+## Part of the gourdian25 ecosystem
+
+grnoti is one of several small, independent Go libraries meant to be used
+together:
+
+- [grcache](https://github.com/gourdian25/grcache) — backend-agnostic
+  caching abstraction; grnoti's `NewCacheIdempotencyStore`,
+  `NewCachedPreferencesStore`, and `NewCacheBackedExperimentEngine` each
+  wrap any `grcache.Cache` directly, no adapter needed.
+- [grevents](https://github.com/gourdian25/grevents) — an in-process event
+  bus; grnoti optionally publishes `notification.sent`/
+  `notification.failed`/`experiment.assigned` lifecycle events through it —
+  best-effort, so a nil bus or a publish failure never affects the durable
+  operation it follows.
+- [gourdiantoken](https://github.com/gourdian25/gourdiantoken) — JWT
+  access/refresh token issuance, verification, revocation, and rotation.
+- [grlog](https://github.com/gourdian25/grlog) — zero-dependency structured
+  logging.
+- [graudit](https://github.com/gourdian25/graudit) — an append-only,
+  tamper-evident audit log with pluggable storage backends.
+- [grpolicy](https://github.com/gourdian25/grpolicy) — attribute-based
+  policy evaluation (RBAC/ABAC), independent of any notion of "user" or
+  "role".
 
 ## Install
 
@@ -105,6 +130,16 @@ whichever combination matches your infrastructure; nothing in
 [docs/architecture.md](docs/architecture.md) for the full interface/backend
 matrix and the reasoning behind each design decision.
 
+## Why this shape
+
+grnoti was the first repo in the gourdian25 ecosystem to use this shape —
+a single flat package with pgx/v5 + sqlc-generated Postgres queries and no
+GORM, ever — rather than adopting it from a sibling repo. grcache, graudit,
+and gourdiantoken later converged on the same flat-package, GORM-free
+pattern during their own standardization passes, so grnoti's shape became
+the template the rest of the ecosystem adopted, not the other way around.
+See [docs.go](docs.go)'s "Package shape" section for the full reasoning.
+
 ## Development
 
 ```sh
@@ -116,6 +151,13 @@ make docker-down # stop them when you're done
 These containers are shared with graudit, grcache, and gourdiantoken (each
 gets its own database/keyspace) — see [CLAUDE.md](CLAUDE.md) for backend
 setup, test scoping, and conventions.
+
+## Contributing
+
+Issues and PRs are welcome at
+[github.com/gourdian25/grnoti](https://github.com/gourdian25/grnoti).
+Please run `make precommit` (fmt + vet + lint + race + coverage-check)
+before submitting.
 
 ## License
 

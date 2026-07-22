@@ -168,3 +168,17 @@ of each:
 ### Repository scaffolding
 
 - `go.mod`, lint/release config, `Makefile`, `LICENSE`, `SECURITY.md`.
+
+### Documentation
+
+- README: added a "Part of the gourdian25 ecosystem" section (the one
+  multi-backend repo that didn't have one yet), covering grnoti's real
+  `grcache`/`grevents` integrations plus the rest of the sibling repos.
+- README: added a short "Contributing" section pointing at `make
+  precommit`, alongside the existing "Development" section.
+- README: added a short "Why this shape" note explaining that grnoti's
+  flat-package, pgx/sqlc, no-GORM layout came first in this ecosystem and
+  was later adopted by grcache/graudit/gourdiantoken, condensed from
+  `docs.go`'s "Package shape" section.
+- README: tightened the loose "~95%" coverage claim to the precise,
+  verified root-package number (95.1%), and noted the enforced 95% gate.
