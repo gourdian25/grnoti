@@ -34,6 +34,10 @@ patterns = [
     "vendor/**",
     "target/**",
     "coverage/**",      # test coverage output
+    "internal/postgresdb/**", # sqlc-generated: bark's header clobbers sqlc's
+                              # own "Code generated... DO NOT EDIT" marker,
+                              # which every Go tool (golangci-lint included)
+                              # relies on to skip generated files
 ]
 # Patterns for files that appear in bark.txt but do NOT receive headers
 # Example: header_skip = ["*.md", "*.mdx", "docs/**"]
