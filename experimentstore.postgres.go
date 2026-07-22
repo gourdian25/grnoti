@@ -57,7 +57,7 @@ func NewPostgresExperimentStore(cfg PostgresConfig) (ExperimentStore, error) {
 		return nil, err
 	}
 	logger := OrNop(cfg.Logger)
-	logger.Infof("grnoti/postgres: experiment store connected")
+	logger.Info("grnoti/postgres: experiment store connected")
 	return &postgresExperimentStore{pool: pool, queries: queries, logger: logger, ownsPool: ownsPool}, nil
 }
 
@@ -160,7 +160,7 @@ func (s *postgresExperimentStore) Close() error {
 		if s.ownsPool {
 			s.pool.Close()
 		}
-		s.logger.Infof("grnoti/postgres: experiment store closed")
+		s.logger.Info("grnoti/postgres: experiment store closed")
 	})
 	return nil
 }

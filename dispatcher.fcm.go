@@ -155,7 +155,7 @@ func (d *fcmDispatcher) Send(ctx context.Context, tokens []DeviceToken, msg Mess
 		return DispatchResult{}, nil
 	}
 	if err := d.payloadValidator.ValidateSize(msg); err != nil {
-		d.logger.Errorf("grnoti/fcm: payload validation failed: %v", err)
+		d.logger.Error("grnoti/fcm: payload validation failed", "error", err)
 		return DispatchResult{FailureCount: len(tokens), Errors: []error{err}}, err
 	}
 
@@ -168,7 +168,7 @@ func (d *fcmDispatcher) Send(ctx context.Context, tokens []DeviceToken, msg Mess
 		byPlatform[platform] = append(byPlatform[platform], t)
 	}
 
-	d.logger.Infof("grnoti/fcm: dispatching to %d tokens across %d platform groups", len(tokens), len(byPlatform))
+	d.logger.Info("grnoti/fcm: dispatching", "tokens", len(tokens), "platform_groups", len(byPlatform))
 
 	result := DispatchResult{
 		SuccessByPlatform: make(map[Platform]int, len(byPlatform)),
@@ -197,8 +197,8 @@ func (d *fcmDispatcher) Send(ctx context.Context, tokens []DeviceToken, msg Mess
 	if d.metrics != nil && len(result.InvalidTokens) > 0 {
 		d.metrics.IncInvalidTokens(len(result.InvalidTokens))
 	}
-	d.logger.Infof("grnoti/fcm: dispatch complete: success=%d failure=%d invalid=%d retryable=%d",
-		result.SuccessCount, result.FailureCount, len(result.InvalidTokens), result.RetryableErrors)
+	d.logger.Info("grnoti/fcm: dispatch complete",
+		"success", result.SuccessCount, "failure", result.FailureCount, "invalid", len(result.InvalidTokens), "retryable", result.RetryableErrors)
 	return result, nil
 }
 
@@ -250,7 +250,7 @@ func (d *fcmDispatcher) sendBatchWithRetry(ctx context.Context, tokens []DeviceT
 	for attempt := 0; attempt < d.config.MaxRetryAttempts; attempt++ {
 		if attempt > 0 {
 			delay := d.retryStrategy.GetDelay(attempt - 1)
-			d.logger.Infof("grnoti/fcm: retrying batch (platform=%s attempt=%d delay=%s)", platform, attempt, delay)
+			d.logger.Debug("grnoti/fcm: retrying batch", "platform", platform, "attempt", attempt, "delay", delay)
 			select {
 			case <-ctx.Done():
 				result.Errors = append(result.Errors, ctx.Err())
@@ -355,10 +355,10 @@ func (d *fcmDispatcher) SendToToken(ctx context.Context, token DeviceToken, msg 
 	}
 	if err != nil {
 		fcmErr := classifyFCMError(err, token.Token)
-		d.logger.Errorf("grnoti/fcm: send to token %s failed (code=%s): %v", maskToken(token.Token), fcmErr.Code, err)
+		d.logger.Error("grnoti/fcm: send to token failed", "token", maskToken(token.Token), "code", fcmErr.Code, "error", err)
 		return fcmErr
 	}
-	d.logger.Infof("grnoti/fcm: sent to token %s (platform=%s)", maskToken(token.Token), token.Platform)
+	d.logger.Debug("grnoti/fcm: sent to token", "token", maskToken(token.Token), "platform", token.Platform)
 	return nil
 }
 
@@ -386,10 +386,10 @@ func (d *fcmDispatcher) SendToTopic(ctx context.Context, topic string, msg Messa
 		err = sendFn()
 	}
 	if err != nil {
-		d.logger.Errorf("grnoti/fcm: send to topic %s failed: %v", topic, err)
+		d.logger.Error("grnoti/fcm: send to topic failed", "topic", topic, "error", err)
 		return err
 	}
-	d.logger.Infof("grnoti/fcm: sent to topic %s", topic)
+	d.logger.Info("grnoti/fcm: sent to topic", "topic", topic)
 	return nil
 }
 

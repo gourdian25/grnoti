@@ -50,20 +50,25 @@ type recordingLogger struct {
 	infos, warns, errs []string
 }
 
-func (l *recordingLogger) Infof(format string, _ ...interface{}) {
+func (l *recordingLogger) Debug(msg string, _ ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.infos = append(l.infos, format)
+	l.infos = append(l.infos, msg)
 }
-func (l *recordingLogger) Warnf(format string, _ ...interface{}) {
+func (l *recordingLogger) Info(msg string, _ ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.warns = append(l.warns, format)
+	l.infos = append(l.infos, msg)
 }
-func (l *recordingLogger) Errorf(format string, _ ...interface{}) {
+func (l *recordingLogger) Warn(msg string, _ ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.errs = append(l.errs, format)
+	l.warns = append(l.warns, msg)
+}
+func (l *recordingLogger) Error(msg string, _ ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.errs = append(l.errs, msg)
 }
 func (l *recordingLogger) warnCount() int {
 	l.mu.Lock()

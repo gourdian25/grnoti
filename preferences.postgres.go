@@ -53,7 +53,7 @@ func NewPostgresPreferencesStore(cfg PostgresConfig) (PreferencesStore, error) {
 		return nil, err
 	}
 	logger := OrNop(cfg.Logger)
-	logger.Infof("grnoti/postgres: preferences store connected")
+	logger.Info("grnoti/postgres: preferences store connected")
 	return &postgresPreferencesStore{pool: pool, queries: queries, logger: logger, ownsPool: ownsPool}, nil
 }
 
@@ -112,7 +112,7 @@ func (s *postgresPreferencesStore) Close() error {
 		if s.ownsPool {
 			s.pool.Close()
 		}
-		s.logger.Infof("grnoti/postgres: preferences store closed")
+		s.logger.Info("grnoti/postgres: preferences store closed")
 	})
 	return nil
 }

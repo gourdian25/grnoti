@@ -44,7 +44,7 @@ func NewPostgresTokenStore(cfg PostgresConfig) (TokenStore, error) {
 		return nil, err
 	}
 	logger := OrNop(cfg.Logger)
-	logger.Infof("grnoti/postgres: token store connected")
+	logger.Info("grnoti/postgres: token store connected")
 	return &postgresTokenStore{pool: pool, queries: queries, logger: logger, ownsPool: ownsPool}, nil
 }
 
@@ -104,7 +104,7 @@ func (s *postgresTokenStore) MarkInvalid(ctx context.Context, token string) erro
 		return fmt.Errorf("grnoti/postgres: mark invalid %s: %w", token, errors.Join(err, ErrBackendUnavailable))
 	}
 	if affected == 0 {
-		s.logger.Warnf("grnoti/postgres: MarkInvalid: token %s not found (not an error)", token)
+		s.logger.Debug("grnoti/postgres: MarkInvalid: token not found", "token", token)
 	}
 	return nil
 }
@@ -132,7 +132,7 @@ func (s *postgresTokenStore) DeleteToken(ctx context.Context, token string) erro
 		return fmt.Errorf("grnoti/postgres: delete token %s: %w", token, errors.Join(err, ErrBackendUnavailable))
 	}
 	if affected == 0 {
-		s.logger.Warnf("grnoti/postgres: DeleteToken: token %s not found (not an error)", token)
+		s.logger.Debug("grnoti/postgres: DeleteToken: token not found", "token", token)
 	}
 	return nil
 }
@@ -143,7 +143,7 @@ func (s *postgresTokenStore) Close() error {
 		if s.ownsPool {
 			s.pool.Close()
 		}
-		s.logger.Infof("grnoti/postgres: token store closed")
+		s.logger.Info("grnoti/postgres: token store closed")
 	})
 	return nil
 }

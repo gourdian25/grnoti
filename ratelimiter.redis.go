@@ -202,11 +202,11 @@ func NewRedisRateLimiter(cfg RedisRateLimiterConfig) (RateLimiter, error) {
 	defer cancel()
 	if _, err := client.Ping(ctx).Result(); err != nil {
 		_ = client.Close()
-		logger.Errorf("grnoti: redis rate limiter connect %s failed: %v", cfg.Addr, err)
+		logger.Error("grnoti: redis rate limiter connect failed", "addr", cfg.Addr, "error", err)
 		return nil, fmt.Errorf("grnoti: connect %s: %w", cfg.Addr, ErrBackendUnavailable)
 	}
 
-	logger.Infof("grnoti: redis rate limiter connected to %s (key %q)", cfg.Addr, cfg.Key)
+	logger.Info("grnoti: redis rate limiter connected", "addr", cfg.Addr, "key", cfg.Key)
 	r := &redisRateLimiter{
 		client:         client,
 		logger:         logger,
@@ -325,7 +325,7 @@ func (r *redisRateLimiter) Close() error {
 	r.closeOnce.Do(func() {
 		r.closed.Store(true)
 		err = r.client.Close()
-		r.logger.Infof("grnoti: redis rate limiter closed")
+		r.logger.Info("grnoti: redis rate limiter closed")
 	})
 	return err
 }

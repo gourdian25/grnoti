@@ -7,6 +7,7 @@ require (
 	github.com/IBM/sarama v1.60.0
 	github.com/gourdian25/grcache v0.2.0
 	github.com/gourdian25/grevents v0.1.1
+	github.com/gourdian25/grlog v0.1.1
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/redis/go-redis/v9 v9.21.0
 	go.mongodb.org/mongo-driver v1.17.9

@@ -84,7 +84,7 @@ func NewPostgresDLQHandler(cfg PostgresDLQHandlerConfig) (DLQHandler, error) {
 		maxRetries = 3
 	}
 	logger := OrNop(cfg.Logger)
-	logger.Infof("grnoti/postgres: dlq handler connected")
+	logger.Info("grnoti/postgres: dlq handler connected")
 	return &postgresDLQHandler{
 		pool: pool, queries: queries,
 		maxRetries: maxRetries, retryDelay: cfg.RetryDelay, maxRetryDelay: cfg.MaxRetryDelay,
@@ -230,7 +230,7 @@ func (h *postgresDLQHandler) Close() error {
 		if h.ownsPool {
 			h.pool.Close()
 		}
-		h.logger.Infof("grnoti/postgres: dlq handler closed")
+		h.logger.Info("grnoti/postgres: dlq handler closed")
 	})
 	return nil
 }

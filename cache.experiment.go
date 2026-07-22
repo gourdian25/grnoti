@@ -54,7 +54,7 @@ func (e *cacheExperimentEngine) GetVariant(ctx context.Context, userID string, e
 	}
 	var variant ExperimentVariant
 	if jsonErr := json.Unmarshal(raw, &variant); jsonErr != nil {
-		e.logger.Warnf("grnoti: corrupt cached assignment for %s/%s, treating as unassigned: %v", userID, experimentID, jsonErr)
+		e.logger.Warn("grnoti: corrupt cached assignment, treating as unassigned", "user_id", userID, "experiment_id", experimentID, "error", jsonErr)
 		return nil, nil
 	}
 	return &variant, nil
@@ -78,7 +78,7 @@ func (e *cacheExperimentEngine) AssignVariant(ctx context.Context, userID string
 		// memory-pressure one a caller can address via grcache's own
 		// InvalidateTag/backend-level eviction if needed.
 		if setErr := e.cache.Set(ctx, assignmentKey(userID, experiment.ID), raw, 0); setErr != nil {
-			e.logger.Warnf("grnoti: caching assignment for %s/%s failed: %v", userID, experiment.ID, setErr)
+			e.logger.Warn("grnoti: caching assignment failed", "user_id", userID, "experiment_id", experiment.ID, "error", setErr)
 		}
 	}
 
@@ -91,7 +91,7 @@ func (e *cacheExperimentEngine) AssignVariant(ctx context.Context, userID string
 
 func (e *cacheExperimentEngine) TrackImpression(ctx context.Context, userID string, experimentID string, variantID string) error {
 	if e.analytics == nil {
-		e.logger.Warnf("grnoti: TrackImpression(user=%s, experiment=%s, variant=%s): no AnalyticsPublisher configured, dropping", userID, experimentID, variantID)
+		e.logger.Warn("grnoti: TrackImpression dropped, no AnalyticsPublisher configured", "user_id", userID, "experiment_id", experimentID, "variant_id", variantID)
 		return nil
 	}
 	return e.analytics.PublishImpression(ctx, userID, experimentID, variantID)
@@ -99,7 +99,7 @@ func (e *cacheExperimentEngine) TrackImpression(ctx context.Context, userID stri
 
 func (e *cacheExperimentEngine) TrackConversion(ctx context.Context, userID string, experimentID string) error {
 	if e.analytics == nil {
-		e.logger.Warnf("grnoti: TrackConversion(user=%s, experiment=%s): no AnalyticsPublisher configured, dropping", userID, experimentID)
+		e.logger.Warn("grnoti: TrackConversion dropped, no AnalyticsPublisher configured", "user_id", userID, "experiment_id", experimentID)
 		return nil
 	}
 	return e.analytics.PublishConversion(ctx, userID, experimentID)

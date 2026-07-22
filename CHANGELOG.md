@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- `CircuitBreakerConfig.Logger` field: the breaker now logs a Warn on
+  opening and an Info on half-open/close transitions — previously it had
+  no logging at all despite `logger.go`'s own doc comment already listing
+  "circuit-breaker state transitions" as a logged concern.
 - Core contracts: `Event`, `Message`, `DeviceToken`, `DispatchResult`,
   `ProcessingResult`, and the full set of storage-agnostic interfaces
   (`TokenStore`, `PreferencesStore`, `DLQHandler`, `ExperimentStore`,
@@ -62,6 +66,25 @@ All notable changes to this project are documented in this file.
 - `make precommit`/`make prerelease` targets.
 
 ### Changed
+
+- `Logger`'s three printf-style methods (`Infof`/`Warnf`/`Errorf(format
+  string, args ...interface{})`) replaced with four `log/slog`-shaped
+  methods (`Debug`/`Info`/`Warn`/`Error(msg string, args ...any)`), matching
+  `*slog.Logger`'s own signatures exactly so any slog-based logger —
+  including `*grlog.Logger` via `slog.New(grlog.NewSlogHandler(...))` —
+  satisfies it with no adapter. Consistent with the same change landing
+  across grcache/grevents/graudit/grpolicy/gourdiantoken in this pass. Real
+  structured field values (previously flattened into printf format
+  strings) now reach any structured-output logger intact. Since this repo
+  has never tagged a release, this is not a breaking change to any shipped
+  version. Several previously-Info call sites (routine per-event/per-token/
+  per-attempt detail: FCM per-token sends, topic-routing decisions,
+  "token not found (not an error)" cache misses) were reclassified to
+  Debug; lifecycle and failure events are unchanged. `github.com/gourdian25/
+  grlog` is now a test-only dependency (see `logger_grlog_test.go`),
+  matching grcache/grevents/graudit/grpolicy's own compile-time proof that
+  `*slog.Logger` (via `slog.New(grlog.NewSlogHandler(...))`) satisfies
+  `grnoti.Logger` with no adapter.
 
 Ecosystem-wide Stage 4 pass: grnoti was the last repo to adopt the
 workspace's standardized Docker test infrastructure (Postgres/Redis/Mongo/

@@ -88,11 +88,11 @@ func NewKafkaEventConsumer(cfg KafkaConsumerConfig) (EventConsumer, error) {
 
 	consumerGroup, err := sarama.NewConsumerGroup(cfg.Brokers, cfg.GroupID, saramaCfg)
 	if err != nil {
-		logger.Errorf("grnoti/kafka: create consumer group %q failed: %v", cfg.GroupID, err)
+		logger.Error("grnoti/kafka: create consumer group failed", "group_id", cfg.GroupID, "error", err)
 		return nil, fmt.Errorf("grnoti/kafka: create consumer group: %w", ErrBackendUnavailable)
 	}
 
-	logger.Infof("grnoti/kafka: consumer group %q created for topics %v", cfg.GroupID, cfg.Topics)
+	logger.Info("grnoti/kafka: consumer group created", "group_id", cfg.GroupID, "topics", cfg.Topics)
 	return &kafkaEventConsumer{
 		consumerGroup: consumerGroup,
 		topics:        cfg.Topics,
@@ -115,14 +115,14 @@ func (c *kafkaEventConsumer) Start(ctx context.Context, handler func(context.Con
 
 	go func() {
 		for err := range c.consumerGroup.Errors() {
-			c.logger.Errorf("grnoti/kafka: consumer group error: %v", err)
+			c.logger.Error("grnoti/kafka: consumer group error", "error", err)
 		}
 	}()
 
-	c.logger.Infof("grnoti/kafka: consumer starting for topics %v", c.topics)
+	c.logger.Info("grnoti/kafka: consumer starting", "topics", c.topics)
 	for {
 		if err := ctx.Err(); err != nil {
-			c.logger.Infof("grnoti/kafka: context done, stopping consumer")
+			c.logger.Info("grnoti/kafka: context done, stopping consumer")
 			return nil
 		}
 
@@ -131,7 +131,7 @@ func (c *kafkaEventConsumer) Start(ctx context.Context, handler func(context.Con
 			if c.closed.Load() {
 				return nil
 			}
-			c.logger.Errorf("grnoti/kafka: consume error: %v", err)
+			c.logger.Error("grnoti/kafka: consume error", "error", err)
 			return fmt.Errorf("grnoti/kafka: consume: %w", err)
 		}
 		if c.closed.Load() {
@@ -149,7 +149,7 @@ func (c *kafkaEventConsumer) Close() error {
 		if cerr := c.consumerGroup.Close(); cerr != nil {
 			err = fmt.Errorf("grnoti/kafka: close consumer group: %w", cerr)
 		}
-		c.logger.Infof("grnoti/kafka: consumer closed")
+		c.logger.Info("grnoti/kafka: consumer closed")
 	})
 	return err
 }
@@ -181,7 +181,7 @@ func (c *kafkaEventConsumer) ConsumeClaim(session sarama.ConsumerGroupSession, c
 
 			var event Event
 			if err := json.Unmarshal(message.Value, &event); err != nil {
-				c.logger.Errorf("grnoti/kafka: unmarshal event (topic=%s offset=%d): %v", message.Topic, message.Offset, err)
+				c.logger.Error("grnoti/kafka: unmarshal event failed", "topic", message.Topic, "offset", message.Offset, "error", err)
 				// Mark it anyway: a poison message that will never parse
 				// would otherwise block this partition forever.
 				session.MarkMessage(message, "")
@@ -190,7 +190,7 @@ func (c *kafkaEventConsumer) ConsumeClaim(session sarama.ConsumerGroupSession, c
 
 			if handler != nil {
 				if err := handler(session.Context(), event); err != nil {
-					c.logger.Errorf("grnoti/kafka: handler error for event %s: %v", event.EventID, err)
+					c.logger.Error("grnoti/kafka: handler error", "event_id", event.EventID, "error", err)
 					// Don't mark: let it be redelivered.
 					continue
 				}

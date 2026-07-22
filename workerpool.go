@@ -85,7 +85,7 @@ func NewWorkerPool(deps WorkerPoolDeps) (*WorkerPool, error) {
 
 // Start spawns the pool's worker goroutines. Safe to call at most once.
 func (wp *WorkerPool) Start() {
-	wp.logger.Infof("grnoti: worker pool starting with %d workers", wp.workers)
+	wp.logger.Info("grnoti: worker pool starting", "workers", wp.workers)
 	for i := 0; i < wp.workers; i++ {
 		wp.wg.Add(1)
 		go wp.worker(i)
@@ -111,7 +111,7 @@ func (wp *WorkerPool) worker(id int) {
 				return
 			}
 			if err := wp.handler(wp.ctx, event); err != nil {
-				wp.logger.Errorf("grnoti: worker %d: processing event %s failed: %v", id, event.EventID, err)
+				wp.logger.Error("grnoti: worker processing event failed", "worker_id", id, "event_id", event.EventID, "error", err)
 			}
 		case <-wp.ctx.Done():
 			return
@@ -128,7 +128,7 @@ func (wp *WorkerPool) Submit(event Event) error {
 	case wp.queue <- event:
 		return nil
 	default:
-		wp.logger.Warnf("grnoti: worker pool queue full (%d/%d), rejecting event %s", len(wp.queue), cap(wp.queue), event.EventID)
+		wp.logger.Warn("grnoti: worker pool queue full, rejecting event", "queue_len", len(wp.queue), "queue_cap", cap(wp.queue), "event_id", event.EventID)
 		if wp.metrics != nil {
 			wp.metrics.IncEventsSkipped("backpressure")
 		}
@@ -157,7 +157,7 @@ func (wp *WorkerPool) Stop() {
 	close(wp.queue)
 	wp.wg.Wait()
 	wp.cancel()
-	wp.logger.Infof("grnoti: worker pool stopped")
+	wp.logger.Info("grnoti: worker pool stopped")
 }
 
 // GetStats returns a point-in-time snapshot of the pool's queue occupancy.

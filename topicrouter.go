@@ -87,16 +87,16 @@ func NewEventTypeTopicRouter(topicMappings map[EventType]string, tokenStore Toke
 
 func (r *eventTypeTopicRouter) ResolveTarget(ctx context.Context, event Event) (NotificationTarget, error) {
 	if topic, ok := event.Payload["topic"]; ok && topic != "" {
-		r.logger.Infof("grnoti: routing event %s to explicit topic override %s", event.EventID, topic)
+		r.logger.Debug("grnoti: routing event to explicit topic override", "event_id", event.EventID, "topic", topic)
 		return TopicTarget{Topic: topic}, nil
 	}
 
 	if topic, ok := r.topicMappings[event.Type]; ok && topic != "" {
-		r.logger.Infof("grnoti: routing event %s to mapped topic %s for type %s", event.EventID, topic, event.Type)
+		r.logger.Debug("grnoti: routing event to mapped topic", "event_id", event.EventID, "topic", topic, "type", event.Type)
 		return TopicTarget{Topic: topic}, nil
 	}
 
-	r.logger.Infof("grnoti: routing event %s to per-recipient tokens (no topic override or mapping)", event.EventID)
+	r.logger.Debug("grnoti: routing event to per-recipient tokens", "event_id", event.EventID)
 	tokens, err := resolveTokensForEvent(ctx, event, r.tokenStore)
 	if err != nil {
 		return nil, fmt.Errorf("grnoti: failed to get tokens for event %s: %w", event.EventID, err)

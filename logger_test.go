@@ -11,9 +11,10 @@ func TestNopLogger_DiscardsEverything(t *testing.T) {
 	}
 	// noopLogger's methods have empty bodies; calling them is the whole
 	// test — there's nothing to assert beyond "doesn't panic."
-	l.Infof("info %s", "x")
-	l.Warnf("warn %s", "x")
-	l.Errorf("error %s", "x")
+	l.Debug("debug", "x")
+	l.Info("info", "x")
+	l.Warn("warn", "x")
+	l.Error("error", "x")
 }
 
 func TestOrNop(t *testing.T) {

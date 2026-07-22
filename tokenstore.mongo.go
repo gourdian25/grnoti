@@ -103,7 +103,7 @@ func NewMongoTokenStore(cfg MongoTokenStoreConfig) (TokenStore, error) {
 		return nil, fmt.Errorf("grnoti/mongo: ensure indexes: %w", err)
 	}
 
-	logger.Infof("grnoti/mongo: token store connected (database=%s collection=%s)", cfg.Database, collName)
+	logger.Info("grnoti/mongo: token store connected", "database", cfg.Database, "collection", collName)
 	return &mongoTokenStore{client: client, collection: collection, logger: logger}, nil
 }
 
@@ -142,7 +142,7 @@ func (s *mongoTokenStore) GetActiveTokensBatch(ctx context.Context, userIDs []st
 	for cursor.Next(ctx) {
 		var doc mongoTokenDoc
 		if err := cursor.Decode(&doc); err != nil {
-			s.logger.Warnf("grnoti/mongo: skipping undecodable token document: %v", err)
+			s.logger.Warn("grnoti/mongo: skipping undecodable token document", "error", err)
 			continue
 		}
 		out[doc.UserID] = append(out[doc.UserID], doc.toDeviceToken())
@@ -186,7 +186,7 @@ func (s *mongoTokenStore) MarkInvalid(ctx context.Context, token string) error {
 		return fmt.Errorf("grnoti/mongo: mark invalid %s: %w", token, errors.Join(err, ErrBackendUnavailable))
 	}
 	if res.MatchedCount == 0 {
-		s.logger.Warnf("grnoti/mongo: MarkInvalid: token %s not found (not an error)", token)
+		s.logger.Debug("grnoti/mongo: MarkInvalid: token not found", "token", token)
 	}
 	return nil
 }
@@ -222,7 +222,7 @@ func (s *mongoTokenStore) DeleteToken(ctx context.Context, token string) error {
 		return fmt.Errorf("grnoti/mongo: delete token %s: %w", token, errors.Join(err, ErrBackendUnavailable))
 	}
 	if res.DeletedCount == 0 {
-		s.logger.Warnf("grnoti/mongo: DeleteToken: token %s not found (not an error)", token)
+		s.logger.Debug("grnoti/mongo: DeleteToken: token not found", "token", token)
 	}
 	return nil
 }
@@ -232,7 +232,7 @@ func (s *mongoTokenStore) Close() error {
 	s.closeOnce.Do(func() {
 		s.closed.Store(true)
 		err = s.client.Disconnect(context.Background())
-		s.logger.Infof("grnoti/mongo: token store closed")
+		s.logger.Info("grnoti/mongo: token store closed")
 	})
 	return err
 }

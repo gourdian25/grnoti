@@ -79,7 +79,7 @@ func PublishSent(ctx context.Context, bus grevents.Bus, logger Logger, payload N
 		},
 	}
 	if err := bus.Publish(ctx, event); err != nil {
-		logger.Warnf("grnoti: publish %s for event %s failed: %v", TopicNotificationSent, payload.EventID, err)
+		logger.Warn("grnoti: publish failed", "topic", TopicNotificationSent, "event_id", payload.EventID, "error", err)
 	}
 }
 
@@ -101,7 +101,7 @@ func PublishFailed(ctx context.Context, bus grevents.Bus, logger Logger, payload
 		},
 	}
 	if err := bus.Publish(ctx, event); err != nil {
-		logger.Warnf("grnoti: publish %s for event %s failed: %v", TopicNotificationFailed, payload.EventID, err)
+		logger.Warn("grnoti: publish failed", "topic", TopicNotificationFailed, "event_id", payload.EventID, "error", err)
 	}
 }
 
@@ -135,6 +135,6 @@ func PublishAssigned(ctx context.Context, bus grevents.Bus, logger Logger, paylo
 		},
 	}
 	if err := bus.Publish(ctx, event); err != nil {
-		logger.Warnf("grnoti: publish %s for user %s/experiment %s failed: %v", TopicExperimentAssigned, payload.UserID, payload.ExperimentID, err)
+		logger.Warn("grnoti: publish failed", "topic", TopicExperimentAssigned, "user_id", payload.UserID, "experiment_id", payload.ExperimentID, "error", err)
 	}
 }

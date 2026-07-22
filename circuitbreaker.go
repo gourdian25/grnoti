@@ -20,6 +20,7 @@ var ErrTooManyRequests = errors.New("grnoti: too many requests while circuit bre
 
 type standardCircuitBreaker struct {
 	config CircuitBreakerConfig
+	logger Logger
 
 	mu                  sync.RWMutex
 	state               CircuitState
@@ -83,6 +84,7 @@ func NewCircuitBreakerWithConfig(config CircuitBreakerConfig) (CircuitBreaker, e
 	}
 	return &standardCircuitBreaker{
 		config:          config,
+		logger:          OrNop(config.Logger),
 		state:           CircuitStateClosed,
 		lastStateChange: time.Now(),
 	}, nil
@@ -123,6 +125,7 @@ func (cb *standardCircuitBreaker) beforeRequest() error {
 			cb.state = CircuitStateHalfOpen
 			cb.halfOpenRequests = 0
 			cb.lastStateChange = now
+			cb.logger.Info("grnoti: circuit breaker half-open, allowing trial request")
 		} else {
 			cb.totalRejections++
 			return ErrCircuitOpen
@@ -181,6 +184,7 @@ func (cb *standardCircuitBreaker) openCircuit(now time.Time) {
 	cb.openedAt = now
 	cb.lastStateChange = now
 	cb.halfOpenRequests = 0
+	cb.logger.Warn("grnoti: circuit breaker opened", "consecutive_failures", cb.consecutiveFailures)
 }
 
 func (cb *standardCircuitBreaker) closeCircuit(now time.Time) {
@@ -188,6 +192,7 @@ func (cb *standardCircuitBreaker) closeCircuit(now time.Time) {
 	cb.consecutiveFailures = 0
 	cb.halfOpenRequests = 0
 	cb.lastStateChange = now
+	cb.logger.Info("grnoti: circuit breaker closed")
 }
 
 func (cb *standardCircuitBreaker) State() CircuitState {

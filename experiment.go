@@ -131,7 +131,7 @@ func deterministicPick(userID string, experiment *Experiment) ExperimentVariant 
 // AnalyticsPublisher is visibly logged, not silently dropped.
 func (e *deterministicExperimentEngine) TrackImpression(ctx context.Context, userID string, experimentID string, variantID string) error {
 	if e.analytics == nil {
-		e.logger.Warnf("grnoti: TrackImpression(user=%s, experiment=%s, variant=%s): no AnalyticsPublisher configured, dropping", userID, experimentID, variantID)
+		e.logger.Warn("grnoti: TrackImpression dropped, no AnalyticsPublisher configured", "user_id", userID, "experiment_id", experimentID, "variant_id", variantID)
 		return nil
 	}
 	return e.analytics.PublishImpression(ctx, userID, experimentID, variantID)
@@ -141,7 +141,7 @@ func (e *deterministicExperimentEngine) TrackImpression(ctx context.Context, use
 // AnalyticsPublisher. See TrackImpression.
 func (e *deterministicExperimentEngine) TrackConversion(ctx context.Context, userID string, experimentID string) error {
 	if e.analytics == nil {
-		e.logger.Warnf("grnoti: TrackConversion(user=%s, experiment=%s): no AnalyticsPublisher configured, dropping", userID, experimentID)
+		e.logger.Warn("grnoti: TrackConversion dropped, no AnalyticsPublisher configured", "user_id", userID, "experiment_id", experimentID)
 		return nil
 	}
 	return e.analytics.PublishConversion(ctx, userID, experimentID)

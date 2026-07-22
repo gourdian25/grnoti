@@ -127,7 +127,7 @@ func NewMongoDLQHandler(cfg MongoDLQHandlerConfig) (DLQHandler, error) {
 		return nil, fmt.Errorf("grnoti/mongo: ensure indexes: %w", err)
 	}
 
-	logger.Infof("grnoti/mongo: dlq handler connected (database=%s collection=%s)", cfg.Database, collName)
+	logger.Info("grnoti/mongo: dlq handler connected", "database", cfg.Database, "collection", collName)
 	return &mongoDLQHandler{
 		client: client, collection: collection,
 		maxRetries: maxRetries, retryDelay: retryDelay, maxRetryDelay: maxRetryDelay,
@@ -290,7 +290,7 @@ func (h *mongoDLQHandler) Close() error {
 	h.closeOnce.Do(func() {
 		h.closed.Store(true)
 		err = h.client.Disconnect(context.Background())
-		h.logger.Infof("grnoti/mongo: dlq handler closed")
+		h.logger.Info("grnoti/mongo: dlq handler closed")
 	})
 	return err
 }

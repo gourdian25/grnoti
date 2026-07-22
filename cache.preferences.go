@@ -54,9 +54,9 @@ func (s *cachedPreferencesStore) GetPreferences(ctx context.Context, userID stri
 		if jsonErr := json.Unmarshal(raw, &prefs); jsonErr == nil {
 			return &prefs, nil
 		}
-		s.logger.Warnf("grnoti: preferences cache entry for %s was corrupt, falling back to durable store", userID)
+		s.logger.Warn("grnoti: preferences cache entry corrupt, falling back to durable store", "user_id", userID)
 	} else if !errors.Is(err, grcache.ErrKeyNotFound) {
-		s.logger.Warnf("grnoti: preferences cache read for %s failed, falling back to durable store: %v", userID, err)
+		s.logger.Warn("grnoti: preferences cache read failed, falling back to durable store", "user_id", userID, "error", err)
 	}
 
 	prefs, err := s.store.GetPreferences(ctx, userID)
@@ -66,7 +66,7 @@ func (s *cachedPreferencesStore) GetPreferences(ctx context.Context, userID stri
 
 	if raw, jsonErr := json.Marshal(prefs); jsonErr == nil {
 		if setErr := s.cache.Set(ctx, key, raw, s.ttl, preferencesCacheTag(userID)); setErr != nil {
-			s.logger.Warnf("grnoti: preferences cache write for %s failed: %v", userID, setErr)
+			s.logger.Warn("grnoti: preferences cache write failed", "user_id", userID, "error", setErr)
 		}
 	}
 	return prefs, nil
@@ -81,7 +81,7 @@ func (s *cachedPreferencesStore) SavePreferences(ctx context.Context, prefs *Not
 	// stale cache entry — surfaced as a warning, not an error returned to
 	// the caller, whose SavePreferences call already durably succeeded.
 	if _, err := s.cache.InvalidateTag(ctx, preferencesCacheTag(prefs.UserID)); err != nil {
-		s.logger.Warnf("grnoti: preferences cache invalidation for %s failed: %v", prefs.UserID, err)
+		s.logger.Warn("grnoti: preferences cache invalidation failed", "user_id", prefs.UserID, "error", err)
 	}
 	return nil
 }

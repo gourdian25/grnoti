@@ -38,7 +38,7 @@ func (f *preferencesFilter) ShouldSendNotification(ctx context.Context, event Ev
 		// Fail open: a PreferencesStore outage should not silently drop
 		// notifications for every user. The error is still returned so the
 		// caller can log/alert on it.
-		f.logger.Warnf("grnoti: preferences lookup for %s failed, failing open: %v", event.UserID, err)
+		f.logger.Warn("grnoti: preferences lookup failed, failing open", "user_id", event.UserID, "error", err)
 		return true, "", err
 	}
 
@@ -51,7 +51,7 @@ func (f *preferencesFilter) ShouldSendNotification(ctx context.Context, event Ev
 
 	inQuietHours, qhErr := isWithinQuietHours(prefs, time.Now())
 	if qhErr != nil {
-		f.logger.Warnf("grnoti: quiet-hours evaluation for %s failed, ignoring quiet hours: %v", event.UserID, qhErr)
+		f.logger.Warn("grnoti: quiet-hours evaluation failed, ignoring quiet hours", "user_id", event.UserID, "error", qhErr)
 	} else if inQuietHours {
 		return false, "quiet_hours", nil
 	}

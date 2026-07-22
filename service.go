@@ -183,7 +183,7 @@ func (s *notificationService) Close() error {
 		if s.workerPool != nil {
 			s.workerPool.Stop()
 		}
-		s.logger.Infof("grnoti: notification service closed")
+		s.logger.Info("grnoti: notification service closed")
 	})
 	return nil
 }
@@ -217,10 +217,10 @@ func (s *notificationService) processEvent(ctx context.Context, event Event) (Pr
 		ProcessedAt: startTime,
 	}
 
-	s.logger.Infof("grnoti: processing event %s (target=%s type=%s)", event.EventID, event.GetTargetID(), event.Type)
+	s.logger.Debug("grnoti: processing event", "event_id", event.EventID, "target", event.GetTargetID(), "type", event.Type)
 
 	if err := event.Validate(); err != nil {
-		s.logger.Warnf("grnoti: invalid event %s: %v", event.EventID, err)
+		s.logger.Warn("grnoti: invalid event", "event_id", event.EventID, "error", err)
 		if s.config.SkipInvalidEvents {
 			return s.skip(result, startTime, "invalid_event: "+err.Error()), nil
 		}
@@ -238,7 +238,7 @@ func (s *notificationService) processEvent(ctx context.Context, event Event) (Pr
 	if s.preferencesFilter != nil && s.config.EnablePreferencesFilter && event.IsAuthenticated() {
 		shouldSend, skipReason, prefErr := s.preferencesFilter.ShouldSendNotification(ctx, event)
 		if prefErr != nil {
-			s.logger.Warnf("grnoti: preferences check failed for event %s, proceeding anyway: %v", event.EventID, prefErr)
+			s.logger.Warn("grnoti: preferences check failed, proceeding anyway", "event_id", event.EventID, "error", prefErr)
 		} else if !shouldSend {
 			return s.skip(result, startTime, "preferences_"+skipReason), nil
 		}
@@ -261,7 +261,7 @@ func (s *notificationService) processEvent(ctx context.Context, event Event) (Pr
 	// also leaves result.TokenCount at 0.
 	if result.TokenCount == 0 && dispatchResult.TotalCount() == 0 && dispatchErr == nil {
 		if err := s.idempotency.MarkProcessed(ctx, event.EventID, s.config.IdempotencyTTL); err != nil {
-			s.logger.Warnf("grnoti: failed to mark event %s processed: %v", event.EventID, err)
+			s.logger.Warn("grnoti: failed to mark event processed", "event_id", event.EventID, "error", err)
 		}
 		return s.skip(result, startTime, "no_active_tokens"), nil
 	}
@@ -273,7 +273,7 @@ func (s *notificationService) processEvent(ctx context.Context, event Event) (Pr
 		// partial/total-failure detail there is, so DLQ/metrics/mark-
 		// processed below all still run on real data instead of being
 		// skipped outright.
-		s.logger.Errorf("grnoti: dispatch failed for event %s: %v", event.EventID, dispatchErr)
+		s.logger.Error("grnoti: dispatch failed", "event_id", event.EventID, "error", dispatchErr)
 	}
 	result.DispatchResult = dispatchResult
 
@@ -283,15 +283,15 @@ func (s *notificationService) processEvent(ctx context.Context, event Event) (Pr
 	s.publishLifecycleEvent(ctx, event, dispatchResult)
 
 	if err := s.idempotency.MarkProcessed(ctx, event.EventID, s.config.IdempotencyTTL); err != nil {
-		s.logger.Warnf("grnoti: failed to mark event %s processed: %v", event.EventID, err)
+		s.logger.Warn("grnoti: failed to mark event processed", "event_id", event.EventID, "error", err)
 	}
 
 	result.Duration = time.Since(startTime)
 	if s.metrics != nil && s.config.EnableMetrics {
 		s.metrics.ObserveProcessingLatency(result.Duration)
 	}
-	s.logger.Infof("grnoti: processed event %s: tokens=%d success=%d failure=%d duration=%s",
-		event.EventID, result.TokenCount, dispatchResult.SuccessCount, dispatchResult.FailureCount, result.Duration)
+	s.logger.Info("grnoti: processed event",
+		"event_id", event.EventID, "tokens", result.TokenCount, "success", dispatchResult.SuccessCount, "failure", dispatchResult.FailureCount, "duration", result.Duration)
 
 	return result, nil
 }
@@ -304,7 +304,7 @@ func (s *notificationService) skip(result ProcessingResult, startTime time.Time,
 	if s.metrics != nil && s.config.EnableMetrics {
 		s.metrics.IncEventsSkipped(reason)
 	}
-	s.logger.Infof("grnoti: skipped event %s: %s", result.EventID, reason)
+	s.logger.Debug("grnoti: skipped event", "event_id", result.EventID, "reason", reason)
 	return result
 }
 
@@ -321,7 +321,7 @@ func (s *notificationService) dispatch(ctx context.Context, event Event, msg Mes
 			return DispatchResult{}, err
 		}
 		if target.IsTopicBased() {
-			s.logger.Infof("grnoti: dispatching event %s to topic %s", event.EventID, target.GetTopicName())
+			s.logger.Debug("grnoti: dispatching event to topic", "event_id", event.EventID, "topic", target.GetTopicName())
 			if err := s.dispatcher.SendToTopic(ctx, target.GetTopicName(), msg); err != nil {
 				return DispatchResult{FailureCount: 1, Errors: []error{err}}, err
 			}
@@ -389,10 +389,10 @@ func (s *notificationService) markInvalidTokens(ctx context.Context, event Event
 	if len(dispatchResult.InvalidTokens) == 0 {
 		return
 	}
-	s.logger.Infof("grnoti: marking %d invalid token(s) for event %s", len(dispatchResult.InvalidTokens), event.EventID)
+	s.logger.Info("grnoti: marking invalid tokens", "count", len(dispatchResult.InvalidTokens), "event_id", event.EventID)
 	for _, token := range dispatchResult.InvalidTokens {
 		if err := s.tokenStore.MarkInvalid(ctx, token); err != nil {
-			s.logger.Warnf("grnoti: failed to mark token invalid for event %s: %v", event.EventID, err)
+			s.logger.Warn("grnoti: failed to mark token invalid", "event_id", event.EventID, "error", err)
 		}
 	}
 }
@@ -417,7 +417,7 @@ func (s *notificationService) publishToDLQIfUnresolved(ctx context.Context, even
 	}
 	reason := joinDispatchErrors(dispatchResult.Errors)
 	if err := s.dlqHandler.PublishToDLQ(ctx, event, reason); err != nil {
-		s.logger.Errorf("grnoti: publish to DLQ failed for event %s: %v", event.EventID, err)
+		s.logger.Error("grnoti: publish to DLQ failed", "event_id", event.EventID, "error", err)
 	}
 }
 

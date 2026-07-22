@@ -388,6 +388,9 @@ type CircuitBreakerConfig struct {
 	// MaxHalfOpenRequests bounds concurrent trial requests while
 	// half-open. Defaults to 1 if <= 0.
 	MaxHalfOpenRequests int
+	// Logger receives optional diagnostic messages for state transitions
+	// (open/half-open/close). A nil Logger disables logging.
+	Logger Logger
 }
 
 // CircuitBreakerStats is a point-in-time snapshot of a CircuitBreaker's

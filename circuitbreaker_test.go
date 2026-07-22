@@ -52,6 +52,42 @@ func TestCircuitBreaker_HalfOpenThenCloses(t *testing.T) {
 	}
 }
 
+func TestCircuitBreaker_LogsStateTransitions(t *testing.T) {
+	logger := &recordingLogger{}
+	cb, err := NewCircuitBreakerWithConfig(CircuitBreakerConfig{
+		MaxFailures:  1,
+		Timeout:      20 * time.Millisecond,
+		ResetTimeout: time.Hour,
+		Logger:       logger,
+	})
+	if err != nil {
+		t.Fatalf("NewCircuitBreakerWithConfig: %v", err)
+	}
+
+	_ = cb.Execute(context.Background(), func() error { return errors.New("boom") })
+	if got := cb.State(); got != CircuitStateOpen {
+		t.Fatalf("State() = %s, want %s", got, CircuitStateOpen)
+	}
+	if got := logger.warnCount(); got == 0 {
+		t.Fatal("expected at least one Warn-level log when the breaker opened, got none")
+	}
+
+	time.Sleep(30 * time.Millisecond)
+
+	if err := cb.Execute(context.Background(), func() error { return nil }); err != nil {
+		t.Fatalf("Execute (trial request) = %v, want nil", err)
+	}
+	if got := cb.State(); got != CircuitStateClosed {
+		t.Fatalf("State() after successful trial = %s, want %s", got, CircuitStateClosed)
+	}
+	logger.mu.Lock()
+	infoCount := len(logger.infos)
+	logger.mu.Unlock()
+	if infoCount == 0 {
+		t.Fatal("expected at least one Info-level log across half-open/close transitions, got none")
+	}
+}
+
 func TestCircuitBreaker_HalfOpenFailureReopens(t *testing.T) {
 	cb, err := NewCircuitBreaker(1, 20*time.Millisecond, time.Hour)
 	if err != nil {

@@ -104,11 +104,11 @@ func NewKafkaAnalyticsPublisher(cfg KafkaAnalyticsPublisherConfig) (AnalyticsPub
 
 	producer, err := sarama.NewSyncProducer(cfg.Brokers, saramaCfg)
 	if err != nil {
-		logger.Errorf("grnoti/kafka: create sync producer failed: %v", err)
+		logger.Error("grnoti/kafka: create sync producer failed", "error", err)
 		return nil, fmt.Errorf("grnoti/kafka: create sync producer: %w", ErrBackendUnavailable)
 	}
 
-	logger.Infof("grnoti/kafka: analytics publisher connected (impression_topic=%s conversion_topic=%s)", impressionTopic, conversionTopic)
+	logger.Info("grnoti/kafka: analytics publisher connected", "impression_topic", impressionTopic, "conversion_topic", conversionTopic)
 	return &kafkaAnalyticsPublisher{
 		producer:        producer,
 		impressionTopic: impressionTopic,
@@ -171,7 +171,7 @@ func (p *kafkaAnalyticsPublisher) Close() error {
 		if cerr := p.producer.Close(); cerr != nil {
 			err = fmt.Errorf("grnoti/kafka: close producer: %w", cerr)
 		}
-		p.logger.Infof("grnoti/kafka: analytics publisher closed")
+		p.logger.Info("grnoti/kafka: analytics publisher closed")
 	})
 	return err
 }
