@@ -39,4 +39,11 @@
 // ExperimentEngine's variant assignment is a pure, deterministic function
 // of (userID, experiment.ID, experiment.Variants): the same inputs always
 // produce the same variant, with or without the optional assignment cache.
+//
+// ServiceConfig.EnableRichPush, EnableLocalization, and EnableABTesting are
+// composition-time bookkeeping flags only — nothing in
+// notificationService.processEvent branches on them. What each would
+// describe is decided by which concrete TemplateEngine/ExperimentEngine a
+// caller composes into ServiceDeps before construction, not by a runtime
+// check on these flags.
 package grnoti

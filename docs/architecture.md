@@ -60,7 +60,7 @@ concrete implementations each:
 | `EventConsumer`/`AnalyticsPublisher` | — | — | — | — | Kafka only (`consumer.kafka.go`/`producer.kafka.go`) |
 | `TemplateEngine`       | `defaultTemplateEngine` (in-process) | — | — | — | `localizedTemplateEngine` decorator (locale-aware, wraps another `TemplateEngine`) |
 | `TopicRouter`          | — | — | — | — | `eventTypeTopicRouter` / `staticTopicRouter` / `tokenOnlyRouter` — all pure in-process logic |
-| `CircuitBreaker`       | — | — | — | — | `standardCircuitBreaker` — one implementation, deliberately a concrete type in the public API, not an interface (see §3.6) |
+| `CircuitBreaker`       | — | — | — | — | `standardCircuitBreaker` — the one implementation; `CircuitBreaker` is itself an exported interface, and both constructors (`NewCircuitBreaker`, `NewCircuitBreakerWithConfig`) return that interface type, not the concrete struct (see §3.2 for how it's wired into dispatch) |
 
 `NotificationService` (`service.go`) is the orchestrator that composes all
 of the above via `ServiceDeps`; see `example/main.go` for a full wiring.
