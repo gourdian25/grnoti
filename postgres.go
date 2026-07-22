@@ -194,6 +194,13 @@ func applyPostgresSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	defer conn.Release()
 
+	// The two Exec error branches below (lock acquisition, schema apply)
+	// are only reachable if the connection breaks between Acquire
+	// succeeding and the respective Exec — not deterministically
+	// triggerable against a live Postgres without a flaky timing race, so
+	// they're accepted as untested rather than force-covered (see
+	// TestApplyPostgresSchema_AcquireFailsOnClosedPool for the one branch
+	// here that is triggered deterministically).
 	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", grnotiSchemaLockKey); err != nil {
 		return fmt.Errorf("acquire schema lock: %w", err)
 	}

@@ -23,7 +23,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/gourdian25/grcache/memory"
+	"github.com/gourdian25/grcache"
 	"github.com/gourdian25/grnoti"
 )
 
@@ -97,9 +97,9 @@ func run() error {
 	preferencesStore := grnoti.NewMemoryPreferencesStore()
 	dlqHandler := grnoti.NewMemoryDLQHandler(3, time.Minute, 10*time.Minute)
 
-	idempotencyCache, err := memory.NewMemoryCache()
+	idempotencyCache, err := grcache.NewMemoryCache()
 	if err != nil {
-		return fmt.Errorf("memory.NewMemoryCache: %w", err)
+		return fmt.Errorf("grcache.NewMemoryCache: %w", err)
 	}
 	defer func() { _ = idempotencyCache.Close() }()
 	idempotencyStore := grnoti.NewCacheIdempotencyStore(idempotencyCache)

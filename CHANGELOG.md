@@ -61,6 +61,33 @@ All notable changes to this project are documented in this file.
 - `CLAUDE.md`: backend setup, test scoping, and repo conventions.
 - `make precommit`/`make prerelease` targets.
 
+### Changed
+
+Ecosystem-wide Stage 4 pass: grnoti was the last repo to adopt the
+workspace's standardized Docker test infrastructure (Postgres/Redis/Mongo/
+Kafka shared containers, one database/keyspace/DB-index per repo).
+
+- The Mongo backend's tests (and this repo's documented connection
+  settings) now use the workspace-standard **authenticated** single-node
+  replica set (`root`/`mongo_password` on port `27018`, `directConnection=
+  true`), replacing the previous no-auth standalone connection string —
+  matching graudit's, grcache's, and gourdiantoken's own test setup.
+  `MongoTokenStoreConfig`/`MongoDLQHandlerConfig` already accepted an
+  arbitrary URI, so no production code changed — only `testMongoURI` in
+  `tokenstore.mongo_test.go` (shared by every Mongo-backed test file via
+  the same package).
+- The Redis rate-limiter's and Redis-backed cache's tests now authenticate
+  with the workspace-standard password (`redis_password`), replacing the
+  previous no-auth connection. `RedisRateLimiterConfig`/`grcache.RedisConfig`
+  already had a `Password` field, so this is a test-constant change only
+  (`testRedisPassword` in `ratelimiter.redis_test.go`).
+- Realigned `cache_test.go`/`cache.redis_test.go`/`service_test.go`/
+  `example/main.go` with `grcache` v0.2.0's own flattened package shape
+  (`grcache.NewMemoryCache`/`grcache.NewRedisCache` instead of the
+  now-removed `grcache/memory`/`grcache/redis` subpackages).
+- `make coverage-check`'s threshold raised from 90% to 95%, matching
+  every other repo in the ecosystem's own coverage bar.
+
 ### Fixed
 
 Found via this repo's real-local-services testing policy (Docker
@@ -124,6 +151,19 @@ of each:
   Separately, `internal/postgresdb/schema.sql`'s header comment pointed
   at a `migrate.go` that doesn't exist in this repo; corrected to describe
   the actual mechanism.
+
+### Testing
+
+- Coverage raised from 94.9% to 95.1% on the root package: added
+  `TestPayloadValidator_EstimateSize_IncludesImageURL` (the
+  `ImageURL`-set branch of `fcmPayloadValidator.EstimateSize` had no
+  dedicated test) and `TestApplyPostgresSchema_AcquireFailsOnClosedPool`
+  (the `pool.Acquire` failure branch of `applyPostgresSchema`, via a
+  closed pool). The two remaining error branches in `applyPostgresSchema`
+  (the advisory-lock and schema-apply `Exec` calls) are documented in a
+  code comment as accepted, untested gaps — only reachable via a
+  connection breaking mid-function, not deterministically triggerable
+  against a live Postgres without a flaky timing race.
 
 ### Repository scaffolding
 

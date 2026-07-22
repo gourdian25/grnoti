@@ -11,7 +11,10 @@ import (
 	"time"
 )
 
-const testRedisAddr = "localhost:6379"
+const (
+	testRedisAddr     = "localhost:6379"
+	testRedisPassword = "redis_password"
+)
 
 // newTestRedisRateLimiter gives each test its own bucket key — same
 // per-test-isolation reasoning as the Mongo backend's per-test collection
@@ -20,7 +23,7 @@ const testRedisAddr = "localhost:6379"
 func newTestRedisRateLimiter(t *testing.T, rps, burst int) *redisRateLimiter {
 	t.Helper()
 	rl, err := NewRedisRateLimiter(RedisRateLimiterConfig{
-		Addr: testRedisAddr, RequestsPerSecond: rps, BurstSize: burst,
+		Addr: testRedisAddr, Password: testRedisPassword, RequestsPerSecond: rps, BurstSize: burst,
 		Key: fmt.Sprintf("test:ratelimit:%s:%d", t.Name(), time.Now().UnixNano()),
 	})
 	if err != nil {
@@ -205,7 +208,7 @@ func TestRedisRateLimiter_SharedBucketIsGloballyConsistent(t *testing.T) {
 	key := fmt.Sprintf("test:ratelimit:shared:%d", time.Now().UnixNano())
 	newReplica := func() *redisRateLimiter {
 		rl, err := NewRedisRateLimiter(RedisRateLimiterConfig{
-			Addr: testRedisAddr, RequestsPerSecond: 10, BurstSize: 10, Key: key,
+			Addr: testRedisAddr, Password: testRedisPassword, RequestsPerSecond: 10, BurstSize: 10, Key: key,
 		})
 		if err != nil {
 			t.Skipf("Redis not available at %s, skipping: %v", testRedisAddr, err)

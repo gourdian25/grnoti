@@ -130,9 +130,9 @@ file if these ever drift):
 
 | Backend  | Value |
 |----------|-------|
-| Mongo    | `mongodb://root:mongo_password@localhost:27018/?replicaSet=rs0&authSource=admin&directConnection=true`, database `grnoti_test` — **not yet wired into the Mongo store code**, which still assumes the old no-auth standalone shape; tracked as pending work to bring it onto this shared standard |
+| Mongo    | `mongodb://root:mongo_password@localhost:27018/?directConnection=true`, database `grnoti_test` — `replicaSet=rs0`/`authSource=admin` aren't needed on the connection string; `directConnection=true` alone is sufficient (confirmed empirically, matching graudit's/grcache's/gourdiantoken's own test URIs) |
 | Postgres | `host=localhost user=postgres_user password=postgres_password dbname=grnoti_test port=5432 sslmode=disable` |
-| Redis    | `localhost:6379`, password `redis_password` — **not yet wired in**; the rate-limiter test constants still assume no password, tracked as pending work alongside the Mongo update above |
+| Redis    | `localhost:6379`, password `redis_password`, DB 0 (the default) |
 | Kafka    | `localhost:9092` |
 
 ### Scoping a test run to one backend while iterating

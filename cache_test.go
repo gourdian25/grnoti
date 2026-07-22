@@ -8,14 +8,13 @@ import (
 	"time"
 
 	"github.com/gourdian25/grcache"
-	"github.com/gourdian25/grcache/memory"
 )
 
 func newTestCache(t *testing.T) grcache.Cache {
 	t.Helper()
-	cache, err := memory.NewMemoryCache()
+	cache, err := grcache.NewMemoryCache()
 	if err != nil {
-		t.Fatalf("memory.NewMemoryCache: %v", err)
+		t.Fatalf("grcache.NewMemoryCache: %v", err)
 	}
 	t.Cleanup(func() { _ = cache.Close() })
 	return cache

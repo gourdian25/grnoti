@@ -33,3 +33,12 @@ func TestPayloadValidator_EstimateSize_GrowsWithContent(t *testing.T) {
 		t.Fatalf("EstimateSize did not grow with body size: small=%d large=%d", small, large)
 	}
 }
+
+func TestPayloadValidator_EstimateSize_IncludesImageURL(t *testing.T) {
+	v := NewFCMPayloadValidator()
+	without := v.EstimateSize(Message{Title: "a", Body: "b"})
+	with := v.EstimateSize(Message{Title: "a", Body: "b", ImageURL: "https://example.com/image.png"})
+	if with <= without {
+		t.Fatalf("EstimateSize did not grow with ImageURL set: without=%d with=%d", without, with)
+	}
+}

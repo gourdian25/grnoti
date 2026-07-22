@@ -135,6 +135,22 @@ func TestConnectPostgres_SharedPool(t *testing.T) {
 	}
 }
 
+func TestApplyPostgresSchema_AcquireFailsOnClosedPool(t *testing.T) {
+	pool, err := pgxpool.New(context.Background(), testPostgresDSN)
+	if err != nil {
+		t.Skipf("PostgreSQL not available, skipping: %v", err)
+	}
+	if err := pool.Ping(context.Background()); err != nil {
+		pool.Close()
+		t.Skipf("PostgreSQL not available, skipping: %v", err)
+	}
+	pool.Close()
+
+	if err := applyPostgresSchema(context.Background(), pool); err == nil {
+		t.Fatal("applyPostgresSchema(closed pool) = nil error, want non-nil")
+	}
+}
+
 func TestConnectPostgres_ConcurrentSchemaApplyDoesNotRace(t *testing.T) {
 	pool, err := pgxpool.New(context.Background(), testPostgresDSN)
 	if err != nil {

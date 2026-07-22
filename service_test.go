@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gourdian25/grcache/memory"
+	"github.com/gourdian25/grcache"
 )
 
 // --- test doubles ---
@@ -122,9 +122,9 @@ func (f *blockingPreferencesFilter) ShouldSendNotification(context.Context, Even
 
 func newTestIdempotencyStore(t *testing.T) IdempotencyStore {
 	t.Helper()
-	cache, err := memory.NewMemoryCache()
+	cache, err := grcache.NewMemoryCache()
 	if err != nil {
-		t.Fatalf("memory.NewMemoryCache: %v", err)
+		t.Fatalf("grcache.NewMemoryCache: %v", err)
 	}
 	t.Cleanup(func() { _ = cache.Close() })
 	return NewCacheIdempotencyStore(cache)

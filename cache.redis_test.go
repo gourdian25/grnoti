@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/gourdian25/grcache"
-	grcacheredis "github.com/gourdian25/grcache/redis"
 )
 
 // newTestRedisCache is cache_test.go's newTestCache, but against real local
@@ -22,7 +21,7 @@ import (
 // against the backend it's meant to run against in production.
 func newTestRedisCache(t *testing.T) grcache.Cache {
 	t.Helper()
-	cache, err := grcacheredis.NewRedisCache(grcacheredis.RedisConfig{Addr: testRedisAddr})
+	cache, err := grcache.NewRedisCache(grcache.RedisConfig{Addr: testRedisAddr, Password: testRedisPassword})
 	if err != nil {
 		t.Skipf("Redis not available at %s, skipping: %v", testRedisAddr, err)
 	}

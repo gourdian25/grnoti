@@ -11,7 +11,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 )
 
-const testMongoURI = "mongodb://localhost:27017"
+const testMongoURI = "mongodb://root:mongo_password@localhost:27018/?directConnection=true"
 
 func newTestMongoTokenStore(t *testing.T) TokenStore {
 	t.Helper()
