@@ -8,6 +8,8 @@ firebase.google.com/go/v4 v4.21.0 h1:HBZV4jrLtFYj8EwWyqEZOuRLfkfkV2bpnfyyXHOhPxY
 firebase.google.com/go/v4 v4.21.0/go.mod h1:CDumIdA5oTiyDpLNVcQoW8ZrB5CTgyE2D45DuENIABg=
 github.com/IBM/sarama v1.60.0 h1:ID/bpW3NePqZaFmXvloQ5h/EFJ9qs2GwHkhS6IyAYHw=
 github.com/IBM/sarama v1.60.0/go.mod h1:zRuXO3TY28cqFymE7Ysko5BxWRo8/VRPzRNKL6Eo2/k=
+github.com/bradfitz/gomemcache v0.0.0-20260422231931-4d751bb6e37c h1:6Gpm9YYUEQx2T9zMsYolQhr6sjwwGtFitSA0pQsa7a8=
+github.com/bradfitz/gomemcache v0.0.0-20260422231931-4d751bb6e37c/go.mod h1:r5xuitiExdLAJ09PR7vBVENGvp4ZuTBeWTGtxuX3K+c=
 github.com/bsm/ginkgo/v2 v2.12.0 h1:Ny8MWAHyOepLGlLKYmXG4IEkioBysk6GpaRTLC8zwWs=
 github.com/bsm/ginkgo/v2 v2.12.0/go.mod h1:SwYbGRRDovPVboqFv0tPTcG1sN61LM1Z4ARdbAV9g4c=
 github.com/bsm/gomega v1.27.10 h1:yeMWxP2pV2fG3FgAODIY8EiRE3dy0aeFYt4l7wh6yKA=
@@ -50,12 +52,12 @@ github.com/googleapis/gax-go/v2 v2.22.0 h1:PjIWBpgGIVKGoCXuiCoP64altEJCj3/Ei+kSU
 github.com/googleapis/gax-go/v2 v2.22.0/go.mod h1:irWBbALSr0Sk3qlqb9SyJ1h68WjgeFuiOzI4Rqw5+aY=
 github.com/gorilla/securecookie v1.1.1/go.mod h1:ra0sb63/xPlUeL+yeDciTfxMRAA+MP+HVt/4epWDjd4=
 github.com/gorilla/sessions v1.2.1/go.mod h1:dk2InVEVJ0sfLlnXv9EAgkf6ecYs/i80K/zI+bUmuGM=
-github.com/gourdian25/grcache v0.2.0 h1:/fAW+eyiGGQSZw7ewxDlfLHgZKvzT6oRn1h5MjJGTXA=
-github.com/gourdian25/grcache v0.2.0/go.mod h1:yde5oPcM2W63H5G5tFj+fCzXCa2rvg1AgCFNh4mEWoY=
-github.com/gourdian25/grevents v0.1.1 h1:O9pDznQANzpsHZAmqUUHgrdY7GPKZ70ChT7Pg4Bx7jA=
-github.com/gourdian25/grevents v0.1.1/go.mod h1:FgznAaLIFtuXvOi6IXP3E8RRShUW0LY0iECmCk50Zng=
-github.com/gourdian25/grlog v0.1.1 h1:S0spb+e6sMAXqi0qgizBCQxDL1HfkZt0pfWTINQb/UI=
-github.com/gourdian25/grlog v0.1.1/go.mod h1:EAH3pwL1Ow+NT035nYsfzRDAT3/rFvfTpFMVl/CVHbM=
+github.com/gourdian25/grcache v0.3.1 h1:mjtZci9Y2JlGzWRgRKZ5VIbtBBnurt2EqVC4Vdto+HE=
+github.com/gourdian25/grcache v0.3.1/go.mod h1:91OWrTHKq1uNHTwVcXZ3Q/Hclq5uxXbOIHUpM+7Uwc8=
+github.com/gourdian25/grevents v0.2.0 h1:0gShcGEuA85lT5v/pXBsxKM814pfH6P3czoiWrgEpy4=
+github.com/gourdian25/grevents v0.2.0/go.mod h1:jPR6RCdsjtk6PFJy0lD7we5mzTGS2BumDG42+PdL0Vc=
+github.com/gourdian25/grlog v0.1.2 h1:ucgHnaPWtrWKQJismJPP0Lc/GmXMQnf5I9bN63vCL/Y=
+github.com/gourdian25/grlog v0.1.2/go.mod h1:EAH3pwL1Ow+NT035nYsfzRDAT3/rFvfTpFMVl/CVHbM=
 github.com/hashicorp/go-uuid v1.0.2/go.mod h1:6SBZvOh/SIDV7/2o3Jml5SYk/TvGqwFJ/bN7x4byOro=
 github.com/hashicorp/go-uuid v1.0.3 h1:2gKiV6YVmrJ1i2CKKa9obLvRieoRGviZFL26PcT/Co8=
 github.com/hashicorp/go-uuid v1.0.3/go.mod h1:6SBZvOh/SIDV7/2o3Jml5SYk/TvGqwFJ/bN7x4byOro=

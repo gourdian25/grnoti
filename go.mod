@@ -5,9 +5,9 @@ go 1.26.4
 require (
 	firebase.google.com/go/v4 v4.21.0
 	github.com/IBM/sarama v1.60.0
-	github.com/gourdian25/grcache v0.2.0
-	github.com/gourdian25/grevents v0.1.1
-	github.com/gourdian25/grlog v0.1.1
+	github.com/gourdian25/grcache v0.3.1
+	github.com/gourdian25/grevents v0.2.0
+	github.com/gourdian25/grlog v0.1.2
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/redis/go-redis/v9 v9.21.0
 	go.mongodb.org/mongo-driver v1.17.9
@@ -18,6 +18,7 @@ require (
 	cloud.google.com/go/auth v0.20.0 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
+	github.com/bradfitz/gomemcache v0.0.0-20260422231931-4d751bb6e37c // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/eapache/go-resiliency v1.7.0 // indirect
