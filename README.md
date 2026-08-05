@@ -27,6 +27,7 @@ real local MongoDB/PostgreSQL/Redis/Kafka instances (see
 - [An intermediate example: DLQ, circuit breaker, rate limiting](#an-intermediate-example-dlq-circuit-breaker-rate-limiting)
 - [Configuration](#configuration)
 - [Public API overview](#public-api-overview)
+- [What you write, not grnoti](#what-you-write-not-grnoti)
 - [Postgres: sharing one pool across stores](#postgres-sharing-one-pool-across-stores)
 - [Why storage-agnostic interfaces](#why-storage-agnostic-interfaces)
 - [Why this shape](#why-this-shape)
@@ -360,6 +361,60 @@ side-channel event, not a correctness issue with the assignment itself.
 | `RetryStrategy` (never retries) | `NewNoopRetryStrategy()` |
 | `PayloadValidator` (FCM payload-size check) | `NewFCMPayloadValidator()` |
 | `*WorkerPool` (used internally when `Config.EnableBackpressure` is set) | `NewWorkerPool(WorkerPoolDeps)` |
+
+## What you write, not grnoti
+
+Everything above is either a working implementation or a required field
+`NewNotificationService` validates at construction time. A few things are
+neither — grnoti defines the interface or the extension point, but ships
+no built-in content or concrete implementation, and the code to fill the
+gap is yours to write:
+
+- **`Metrics` has no shipped implementation.** Unlike every other interface
+  in the Public API overview above, there is no `New*Metrics` constructor
+  anywhere in this package — `Metrics` (`interfaces.go`) is a plain
+  7-method interface with zero built-in backends. If you want counters/
+  latency observations (e.g. exported to Prometheus), implement the
+  interface yourself — a thin wrapper over `client_golang`'s
+  `CounterVec`/`HistogramVec` is a natural fit — and wire it into
+  `ServiceDeps.Metrics`/`FCMDispatcherDeps.Metrics`. Leaving it `nil` is
+  fully supported; every call site is nil-safe.
+- **Your application's `EventType` catalog.** grnoti pre-seeds only a
+  handful of generic types (`EventTypeSystemAlert`,
+  `EventTypeAccountVerification`, `EventTypePasswordReset`,
+  `EventTypeGenericTransactional`, `EventTypeGenericMarketing`,
+  `EventTypeCustom`) via `NewEventTypeRegistry()` — deliberately not an
+  exhaustive, domain-specific catalog (see [docs.go](docs.go)). Your
+  actual event types (`order_shipped`, `payment_failed`, however many your
+  domain needs) are your own `EventType` constants, registered with their
+  own `EventTypeMetadata` via `EventTypeRegistry.Register` — typically all
+  at once from an `init()` in your own package.
+- **`MessageTemplate` content for every `EventType` you emit.**
+  `NewTemplateEngine()`'s built-in defaults are deliberately scheme-free
+  and content-free — there is no default "Your order has shipped" text
+  anywhere in grnoti. You call `RegisterTemplate` for each event type your
+  application actually sends, including any deep-link scheme.
+- **A retry-worker process for the DLQ.** `NotificationService` never
+  calls `DLQHandler.ClaimRetryableEvents` itself — only `PublishToDLQ`
+  (see [docs/architecture.md §3.6](docs/architecture.md)). If you want
+  dead-lettered events actually retried, you write a separate process
+  (a periodic job, a cron, a long-running poller) that calls
+  `ClaimRetryableEvents` and resubmits whatever it returns.
+- **A fluent config builder, if you want one.** `ServiceDeps`/
+  `ServiceConfig` and every backend's own `*Config` type are plain struct
+  literals plus a `Default*Config()` function — there is no `With*()`
+  chaining anywhere in this package's public API, by design, and none is
+  planned. If your team prefers that ergonomics, it's a small wrapper you
+  write over `ServiceDeps` in your own package, not something grnoti ships.
+- **The real, authenticated FCM client.** `FCMDispatcherDeps.Client` is
+  the official Firebase Admin SDK's `*messaging.Client` — you construct
+  and authenticate it (service-account credentials, project ID) via that
+  SDK directly; grnoti never touches FCM credentials itself.
+
+See [Limitations / out of scope](#limitations--out-of-scope) below for the
+security/ownership responsibilities (token-ownership binding, encryption,
+template-input sanitization) that are similarly always the caller's, not
+grnoti's.
 
 ## Postgres: sharing one pool across stores
 
