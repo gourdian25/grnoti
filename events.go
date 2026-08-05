@@ -110,14 +110,22 @@ func PublishFailed(ctx context.Context, bus grevents.Bus, logger Logger, payload
 //
 // Callers (deterministicExperimentEngine, cacheExperimentEngine) call this
 // only on a genuinely new assignment, never on a lookup of an
-// already-assigned user — but under a rare concurrent race on a brand-new
-// (userID, experimentID) pair, more than one goroutine can independently
-// observe "not yet assigned" and both proceed to assign+publish (the map/
-// cache write itself stays correct, since both computed the identical
-// deterministic variant — see experiment.go's own doc comment). The result
-// is at-least-once delivery for a given assignment, not exactly-once — an
-// accepted characteristic of a best-effort side channel, matching grevents'
-// own Bus.Publish, which makes no exactly-once guarantee either.
+// already-assigned user. The exactly-once-vs-at-least-once guarantee for a
+// given (userID, experimentID) pair's first assignment differs by engine:
+//   - deterministicExperimentEngine holds a single in-process lock across
+//     its whole check-then-write sequence, so exactly one goroutine can
+//     ever be the one that assigns+publishes for a given key —
+//     exactly-once (see experiment.go's own doc comment).
+//   - cacheExperimentEngine cannot close the equivalent race, because
+//     grcache.Cache has no compare-and-swap/SetNX primitive to make its
+//     check-then-write atomic — concurrent racers on a brand-new pair can
+//     each independently publish, giving at-least-once delivery there (see
+//     cache.experiment.go's own doc comment).
+//
+// Either way the underlying map/cache write itself stays correct (both
+// racers compute the identical deterministic variant), and at-least-once
+// is consistent with grevents' own Bus.Publish, which makes no
+// exactly-once guarantee either.
 func PublishAssigned(ctx context.Context, bus grevents.Bus, logger Logger, payload ExperimentAssignedPayload) {
 	if bus == nil {
 		return

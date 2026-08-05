@@ -5,6 +5,7 @@ package grnoti
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -230,6 +231,27 @@ func TestKafkaEventConsumer_PublishAndConsume(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Start did not return within 10s of ctx cancellation")
+	}
+}
+
+// TestKafkaEventConsumer_WaitReady_ContextCanceled covers WaitReady's
+// ctx.Done() branch (docs/architecture.md §6) — deliberately never call
+// Start, so the consumer group never joins and c.ready is never closed,
+// then confirm WaitReady returns ctx.Err() rather than blocking.
+func TestKafkaEventConsumer_WaitReady_ContextCanceled(t *testing.T) {
+	topic := testKafkaTopic(t)
+	consumer, err := NewKafkaEventConsumer(KafkaConsumerConfig{
+		Brokers: testKafkaBrokers, GroupID: "grnoti-test-group-" + topic, Topics: []string{topic},
+	})
+	if err != nil {
+		t.Skipf("Kafka not available, skipping: %v", err)
+	}
+	defer consumer.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := consumer.(*kafkaEventConsumer).WaitReady(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitReady(canceled ctx) = %v, want context.Canceled", err)
 	}
 }
 

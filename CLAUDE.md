@@ -135,6 +135,13 @@ file if these ever drift):
 | Redis    | `localhost:6379`, password `redis_password`, DB 0 (the default) |
 | Kafka    | `localhost:9092` |
 
+### Running a single test
+
+```sh
+go test -run '^TestName$' .                         # one test function, exact match
+go test -run '^TestName$/^subtest$' .                # one subtest (e.g. a t.Run case)
+```
+
 ### Scoping a test run to one backend while iterating
 
 ```sh
@@ -208,3 +215,10 @@ anything else, and re-run `sqlc generate` to restore it.
   used against a real persistent backend — `t.Name()` alone collides
   across separate `go test` invocations against state that outlives the
   process.
+- Before adding fault-injection tests for an edge case, check
+  docs/architecture.md §6 ("Known, documented gaps") — a handful of
+  branches (deep Kafka consumer-group races, a precise ctx-cancel timing
+  window, a Mongo mid-loop claim error, two structurally-unreachable
+  defensive branches) are deliberately left untested with an inline
+  comment explaining why, rather than chased with disproportionate new
+  test infrastructure.

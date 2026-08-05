@@ -131,6 +131,42 @@ func TestDeterministicExperimentEngine_ConcurrentAssignVariant(t *testing.T) {
 	}
 }
 
+// TestDeterministicExperimentEngine_AssignVariant_ConcurrentNoDoublePublish
+// is the regression test for the double-checked-lock race in AssignVariant
+// (was: RLock check, unlock, compute, Lock, write, unlock, publish — two
+// goroutines could both see "unassigned" and both publish). Many
+// goroutines race on one single, never-before-assigned (userID,
+// experimentID) pair; exactly one PublishAssigned call must land.
+func TestDeterministicExperimentEngine_AssignVariant_ConcurrentNoDoublePublish(t *testing.T) {
+	bus := &stubBus{}
+	engine := NewDeterministicExperimentEngine(nil, bus, nil)
+	experiment := &Experiment{
+		ID:       "exp-single",
+		Variants: []ExperimentVariant{{ID: "a", Weight: 1}, {ID: "b", Weight: 1}},
+	}
+
+	const goroutines = 50
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := engine.AssignVariant(context.Background(), "user-race", experiment); err != nil {
+				t.Errorf("AssignVariant: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	events := bus.publishedEvents()
+	if len(events) != 1 {
+		t.Fatalf("published %d experiment.assigned events for one new (userID, experimentID) pair under %d concurrent AssignVariant calls, want exactly 1", len(events), goroutines)
+	}
+	if events[0].Topic != TopicExperimentAssigned {
+		t.Fatalf("event.Topic = %q, want %q", events[0].Topic, TopicExperimentAssigned)
+	}
+}
+
 func TestDeterministicExperimentEngine_TrackImpression_NoPublisher(t *testing.T) {
 	engine := NewDeterministicExperimentEngine(nil, nil, nil)
 	if err := engine.TrackImpression(context.Background(), "user-1", "exp-1", "control"); err != nil {

@@ -591,17 +591,72 @@ func (d *fcmDispatcher) buildWebpushConfig(msg Message) *messaging.WebpushConfig
 	return config
 }
 
-// classifyFCMError classifies a raw FCM SDK error into a typed FCMError by
-// substring-matching its message — the FCM Admin SDK does not expose a
-// structured error-code type, only text, so this is the same approach the
-// reference implementation used (fcm.dispatcher.go:632-666), kept as-is
-// since it's the actually-wired classification (see docs/plan/
-// grnoti-plan.md §3.3: the reference also had 12 dead ErrFCM* sentinels
-// that never touched this classification at all — those are simply not
-// present in grnoti's errors.go, so there's nothing to remove).
+// fcmStructuredChecks maps the FCM Admin SDK's structured messaging.IsX
+// checks to this package's FCMErrorCode, in priority order. A table rather
+// than a switch with one return per case: every check here can only ever
+// return true against the SDK's real, unexported internal error type,
+// which this repo's fake FCMClient (dispatcher.fcm_test.go) can never
+// construct — so none of these matches fire in this repo's own test suite.
+// Sharing one return statement across all of them (in
+// classifyFCMErrorStructured, below) keeps that unavoidably-uncovered
+// surface to a single line instead of one per check. Deliberately uses
+// each check's non-deprecated form only (e.g. IsUnregistered, not the
+// deprecated IsRegistrationTokenNotRegistered alias the SDK keeps for
+// backward compatibility) — both members of a deprecated pair check the
+// exact same underlying code, so including both would be redundant, not
+// more thorough.
+var fcmStructuredChecks = []struct {
+	is      func(error) bool
+	code    FCMErrorCode
+	message string
+}{
+	{messaging.IsUnregistered, FCMErrorCodeUnregistered, "token is no longer registered"},
+	{messaging.IsInvalidArgument, FCMErrorCodeInvalidArgument, "invalid token or payload"},
+	{messaging.IsSenderIDMismatch, FCMErrorCodeSenderIDMismatch, "sender ID mismatch"},
+	{messaging.IsQuotaExceeded, FCMErrorCodeQuotaExceeded, "quota exceeded"},
+	{messaging.IsUnavailable, FCMErrorCodeUnavailable, "FCM service temporarily unavailable"},
+	{messaging.IsInternal, FCMErrorCodeInternal, "FCM internal error"},
+	{messaging.IsThirdPartyAuthError, FCMErrorCodeThirdPartyAuthErr, "third party auth error"},
+}
+
+// classifyFCMErrorStructured maps err to an FCMErrorCode using
+// fcmStructuredChecks, the FCM Admin SDK's own structured error
+// classification. Returns ok=false when none match, so the caller
+// (classifyFCMError) falls through to substring classification.
+func classifyFCMErrorStructured(err error) (code FCMErrorCode, message string, ok bool) {
+	for _, c := range fcmStructuredChecks {
+		if c.is(err) {
+			return c.code, c.message, true
+		}
+	}
+	return "", "", false
+}
+
+// classifyFCMError classifies a raw FCM SDK error into a typed FCMError
+// using a two-tier approach. First, classifyFCMErrorStructured tries the
+// Admin SDK's structured messaging.IsX(err) checks against its own
+// internal error type — precise, and what real production errors from
+// client.Send/SendEachForMulticast actually are (the SDK's HTTP layer
+// constructs that type via handleFCMError, parsing a messagingErrorCode
+// out of the response body). That type is unexported (Go's internal/
+// package rules), so this repo's own fake FCMClient (dispatcher.fcm_test.go
+// — used because FCM has no local emulator) cannot construct one, meaning
+// this structured path runs in production but has no dedicated test in
+// this repo. When no structured check matches, classification falls
+// through to substring-matching the error text — the reference
+// implementation's original approach (fcm.dispatcher.go:632-666), kept as
+// the fallback since it's what classifies errors from the fake client in
+// tests, and any other error not shaped like the SDK's internal type (e.g.
+// wrapped/decorated errors). (See docs/plan/grnoti-plan.md §3.3: the
+// reference also had 12 dead ErrFCM* sentinels that never touched this
+// classification at all — those are simply not present in grnoti's
+// errors.go, so there's nothing to remove.)
 func classifyFCMError(err error, token string) *FCMError {
 	if err == nil {
 		return nil
+	}
+	if code, message, ok := classifyFCMErrorStructured(err); ok {
+		return NewFCMError(code, token, message, err)
 	}
 	errMsg := err.Error()
 	switch {

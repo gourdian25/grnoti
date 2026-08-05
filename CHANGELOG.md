@@ -174,6 +174,19 @@ of each:
   Separately, `internal/postgresdb/schema.sql`'s header comment pointed
   at a `migrate.go` that doesn't exist in this repo; corrected to describe
   the actual mechanism.
+- `experiment.go`'s `deterministicExperimentEngine.AssignVariant` used a
+  check-then-act pattern (`RLock` check, unlock, compute, `Lock`, write)
+  that let two goroutines both observe a brand-new (userID, experimentID)
+  pair as unassigned and each publish `experiment.assigned` — collapsed to
+  a single lock-held check-then-write, making the publish exactly-once for
+  this engine. `cacheExperimentEngine`'s equivalent race remains
+  at-least-once, documented as an inherent `grcache.Cache` limitation (no
+  compare-and-swap primitive), not a grnoti bug.
+- `dispatcher.fcm.go`'s `classifyFCMError` only ever substring-matched
+  error text. It now tries the FCM Admin SDK's structured `messaging.IsX`
+  checks first, falling back to substring-matching unchanged — more
+  precise classification for real production FCM errors without changing
+  behavior for this repo's fake-client test suite.
 
 ### Testing
 

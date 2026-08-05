@@ -16,11 +16,14 @@ import (
 // result in a sync.RWMutex-protected map. Unlike the reference
 // implementation's deterministicExperimentEngine — whose equivalent maps
 // were mutated with zero synchronization (see docs/plan/grnoti-plan.md §2
-// item 2) — every access here is lock-protected. Since assignment is a
-// pure function, a race between two goroutines computing the same
-// assignment concurrently is harmless (both compute the identical variant,
-// so the map write is idempotent either way); the lock exists to make the
-// map access itself race-free, not to serialize the computation.
+// item 2) — every access here is lock-protected. AssignVariant holds a
+// single write lock across its entire check-then-write sequence for a
+// given key (see AssignVariant), so at most one goroutine can ever observe
+// "not yet assigned" and proceed to compute+store+publish for that key —
+// concurrent callers racing on a brand-new (userID, experimentID) pair get
+// an exactly-once experiment.assigned publish (via PublishAssigned), not
+// just a race-free map write. GetVariant still uses the cheaper RLock,
+// since it only reads.
 type deterministicExperimentEngine struct {
 	mu          sync.RWMutex
 	assignments map[string]ExperimentVariant // key: userID + ":" + experimentID
@@ -74,17 +77,13 @@ func (e *deterministicExperimentEngine) AssignVariant(ctx context.Context, userI
 	}
 	key := assignmentKey(userID, experiment.ID)
 
-	e.mu.RLock()
+	e.mu.Lock()
 	if v, ok := e.assignments[key]; ok {
-		e.mu.RUnlock()
+		e.mu.Unlock()
 		variant := v
 		return &variant, nil
 	}
-	e.mu.RUnlock()
-
 	variant := deterministicPick(userID, experiment)
-
-	e.mu.Lock()
 	e.assignments[key] = variant
 	e.mu.Unlock()
 
