@@ -268,6 +268,53 @@ func TestFCMDispatcher_Send_RetriesRetryableErrorsAndRecovers(t *testing.T) {
 	}
 }
 
+// fixedDelayRetryStrategy is a hand-rolled RetryStrategy fake that always
+// retries after a fixed, generous delay — used only to pin the backoff
+// window comfortably above the ctx-cancel timer in the test below, without
+// threading fullJitterRetry's randomness through the timing assertion.
+type fixedDelayRetryStrategy struct{ delay time.Duration }
+
+func (f fixedDelayRetryStrategy) ShouldRetry(int, error) bool { return true }
+func (f fixedDelayRetryStrategy) GetDelay(int) time.Duration  { return f.delay }
+
+// TestFCMDispatcher_SendBatchWithRetry_CtxCanceledDuringBackoff covers the
+// case <-ctx.Done() arm inside sendBatchWithRetry's retry-delay wait
+// (docs/architecture.md §6). FCMDispatcherDeps has no exported
+// RetryStrategy injection point, so this constructs fcmDispatcher directly
+// (same package, bypassing NewFCMDispatcher) with a fake RetryStrategy
+// returning a 150ms delay, forces the first attempt to fail, and cancels
+// ctx from a goroutine after 20ms — comfortably inside the 150ms window,
+// an in-process timer race with a wide margin, not a network-timing race.
+func TestFCMDispatcher_SendBatchWithRetry_CtxCanceledDuringBackoff(t *testing.T) {
+	client := &fakeFCMClient{multicastErr: errors.New("unavailable: try again")}
+	d := &fcmDispatcher{
+		client:        client,
+		logger:        OrNop(nil),
+		retryStrategy: fixedDelayRetryStrategy{delay: 150 * time.Millisecond},
+		config:        FCMDispatcherConfig{EnableRetry: true, MaxRetryAttempts: 5},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	result := d.sendBatchWithRetry(ctx, []DeviceToken{androidToken("t1")}, Message{Title: "hi"}, PlatformAndroid)
+	elapsed := time.Since(start)
+
+	if elapsed >= 150*time.Millisecond {
+		t.Fatalf("sendBatchWithRetry took %v, want well under the 150ms backoff delay (ctx cancellation should short-circuit the wait)", elapsed)
+	}
+	if len(result.Errors) == 0 {
+		t.Fatal("sendBatchWithRetry result.Errors is empty, want ctx.Err() appended")
+	}
+	if !errors.Is(result.Errors[len(result.Errors)-1], context.Canceled) {
+		t.Fatalf("last result.Error = %v, want context.Canceled", result.Errors[len(result.Errors)-1])
+	}
+}
+
 func TestFCMDispatcher_Send_NoRetryWhenDisabled(t *testing.T) {
 	client := &fakeFCMClient{perTokenError: map[string]error{"t1": errors.New("unavailable")}}
 	d, _ := NewFCMDispatcher(FCMDispatcherDeps{Client: client, Config: FCMDispatcherConfig{EnableRetry: false}})

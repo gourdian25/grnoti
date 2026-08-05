@@ -210,16 +210,31 @@ implementation's equivalent constructed and fully re-registered a brand
 new `TemplateEngine`, all default templates included, on every single
 `BuildMessage` call just to render one localized message.
 
-### 3.11 FCM error classification: kept, dead sentinels dropped
+### 3.11 FCM error classification: two-tier, dead sentinels dropped
 
-`classifyFCMError` (`dispatcher.fcm.go`) substring-matches the FCM Admin
-SDK's raw error text into a small `FCMErrorCode` enum, because the SDK
-exposes no structured error-code type — this is the same approach the
-reference implementation used, kept as-is since it's the classification
-actually wired into retry/invalid-token decisions. The reference also
-declared 12 `ErrFCM*` sentinel errors that this classification never
-touched at all; those simply don't exist in `errors.go` here — there was
-nothing to remove because they were never added.
+`classifyFCMError` (`dispatcher.fcm.go`) classifies a raw FCM SDK error
+into a small `FCMErrorCode` enum using a two-tier approach. First,
+`classifyFCMErrorStructured` tries the FCM Admin SDK's own structured
+`messaging.IsX(err)` checks (e.g. `messaging.IsUnregistered`,
+`messaging.IsInternal`) — these type-assert against the SDK's own
+unexported internal error type, populated by its HTTP layer from a
+`messagingErrorCode` field parsed out of the real FCM response body, and
+are what real production errors from `client.Send`/
+`client.SendEachForMulticast` actually are. That type is unexported (Go's
+`internal/` package rules), so this repo's own fake `FCMClient`
+(`dispatcher.fcm_test.go`, the one deliberate exception to the
+real-services testing policy since FCM has no local emulator) can never
+construct one — meaning the structured path runs in production but has no
+dedicated test in this repo. When no structured check matches,
+classification falls through to substring-matching the error text — the
+reference implementation's original approach, kept as the fallback since
+it's what classifies errors from the fake client in tests, and any other
+error not shaped like the SDK's internal type (e.g. wrapped/decorated
+errors). This is a strictly additive change: the fallback path, and every
+existing test that exercises it, is unchanged. The reference also declared
+12 `ErrFCM*` sentinel errors that this classification never touched at
+all; those simply don't exist in `errors.go` here — there was nothing to
+remove because they were never added.
 
 ### 3.12 Postgres via pgx/v5 + sqlc, not GORM
 
@@ -307,14 +322,27 @@ A few branches are deliberately left untested rather than chased with
 disproportionate new fault-injection infrastructure — each has an inline
 comment at its site explaining why:
 
-- Kafka's deep consumer-group-session races (`consumer.kafka.go`'s
-  `Start`/`WaitReady`) and the `consumerGroup.Close()`/`producer.Close()`
-  error branches — would need a fake sarama consumer-group/producer.
-- `sendBatchWithRetry`'s ctx-canceled-mid-backoff-wait branch — a precise
-  timing race.
+- Kafka's `Start`'s non-`closed` error-return branch and the
+  `consumerGroup.Close()`/`producer.Close()` error-wrap branches — both
+  `consumerGroup`/`producer` are stored as sarama's own interface types
+  (`sarama.ConsumerGroup`/`sarama.SyncProducer`), so a same-package test
+  could substitute hand-rolled fakes without any production-code change,
+  but building those fakes is real, standalone test infrastructure —
+  deliberately deferred to a separate follow-up rather than bundled with
+  smaller changes. (`WaitReady`'s own `ctx.Done()` branch, previously
+  listed alongside these, is now covered by
+  `TestKafkaEventConsumer_WaitReady_ContextCanceled` — no fake needed
+  there, since it's a pre-canceled-context call with no timing window.)
 - `dlq.mongo.go`'s generic mid-loop claim error — needs Mongo-level fault
   injection distinct from the connectivity/empty-config branches that are
-  covered.
+  covered. A real test is possible (the same top-level `ctx` is reused
+  unchanged across every claim iteration, so canceling it after the first
+  iteration's real round-trip completes but before the second's would
+  plausibly reproduce this against the real local Mongo instance, no mock
+  needed) but is a genuine network-timing race with no iteration-boundary
+  hook in production code to pin it deterministically — judged not worth
+  the flakiness risk against this repo's own `make coverage-check`/CI gate
+  for one error-wrap line of coverage. Left undone.
 - Two structurally-unreachable defensive branches kept for future-proofing
   rather than removed: `service.go`'s `NewNotificationService` "build
   worker pool" error wrap, and `payloadvalidator.go`'s `EstimateSize`

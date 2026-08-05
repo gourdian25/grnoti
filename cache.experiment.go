@@ -20,6 +20,19 @@ import (
 // instance computes the identical variant for a given (userID,
 // experiment) regardless of which cache (if any) is used — see
 // docs/plan/grnoti-plan.md §1.1 and experiment.go's own doc comment.
+//
+// Unlike deterministicExperimentEngine, AssignVariant's read-then-write
+// here (GetVariant via cache.Get, then an unconditional cache.Set) cannot
+// be collapsed into a single atomic check-then-write: grcache.Cache
+// exposes only Get/Set/Delete/Exists/InvalidateTag/Stats/Close, no
+// compare-and-swap or SetNX primitive. Under a concurrent first-assignment
+// race on a brand-new (userID, experimentID) pair, more than one goroutine
+// can therefore independently observe "not yet assigned" and each call
+// PublishAssigned — an at-least-once (not exactly-once) experiment.assigned
+// publish guarantee for this engine, unlike deterministicExperimentEngine's
+// exactly-once one (see events.go's PublishAssigned doc comment). Closing
+// this would require extending grcache's interface with an atomic
+// conditional-write primitive — out of scope for grnoti.
 type cacheExperimentEngine struct {
 	cache     grcache.Cache
 	analytics AnalyticsPublisher
