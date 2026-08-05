@@ -135,8 +135,9 @@ type ExperimentStore interface {
 // owning a mutable map of experiment definitions itself — assignment is a
 // pure function of (userID, experiment), so a correct implementation needs
 // no internal synchronization for the assignment computation itself; any
-// caching of the result (see NewCachedExperimentEngine) is a separate,
-// explicitly-synchronized concern.
+// caching of the result (see NewDeterministicExperimentEngine and
+// NewCacheBackedExperimentEngine) is a separate, explicitly-synchronized
+// concern.
 type ExperimentEngine interface {
 	// GetVariant returns userID's existing assignment for experimentID, if
 	// one has already been made and cached.
@@ -150,7 +151,11 @@ type ExperimentEngine interface {
 	// AssignVariant deterministically computes (and caches) userID's
 	// variant within experiment: the same (userID, experiment.ID,
 	// experiment.Variants) always produces the same variant, so repeated
-	// calls are stable even without the cache.
+	// calls are stable even without the cache. On a genuinely new
+	// assignment, implementations publish a TopicExperimentAssigned event
+	// via PublishAssigned — see that function's doc comment for how the
+	// exactly-once-vs-at-least-once guarantee for that publish differs
+	// between this package's two implementations.
 	//
 	// Returns:
 	//   - error: wraps ErrExperimentHasNoVariants if experiment.Variants is

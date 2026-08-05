@@ -13,7 +13,7 @@ storage-agnostic interfaces.
 
 Status: feature-complete per the 14-stage build plan
 ([docs/plan/grnoti-plan.md](docs/plan/grnoti-plan.md)), pre-tagged-release.
-`golangci-lint run` reports 0 issues; test coverage is 95.1% on the root
+`golangci-lint run` reports 0 issues; test coverage is 95.3% on the root
 package, enforced by a 95% gate (`make coverage-check`), verified against
 real local MongoDB/PostgreSQL/Redis/Kafka instances (see
 [CLAUDE.md](CLAUDE.md) for the docker setup).
@@ -302,7 +302,14 @@ each implementation choice.
 Assignment itself (`deterministicPick`) is a pure, deterministic
 function of `(userID, experiment.ID, experiment.Variants)` in both
 engines — the cache is purely an optimization for where repeated
-assignments are remembered, never a correctness dependency.
+assignments are remembered, never a correctness dependency. The two
+engines do differ on how many times the `experiment.assigned` lifecycle
+event fires for a brand-new assignment under concurrent callers:
+`NewDeterministicExperimentEngine`'s in-process lock makes this
+exactly-once; `NewCacheBackedExperimentEngine` can publish more than once
+under a concurrent race, since `grcache.Cache` has no atomic
+conditional-write primitive to close that with — an at-least-once
+side-channel event, not a correctness issue with the assignment itself.
 
 **IdempotencyStore**
 
@@ -418,7 +425,7 @@ make precommit           # fmt + vet + lint + race + coverage-check — run befo
 
 **Coverage scoping caveat**: use `go test -cover .` (a single dot), not
 `go test -cover ./...`. The root package's own coverage is what
-`coverage-check` gates on and reports (95.1% at last check), but running
+`coverage-check` gates on and reports (95.3% at last check), but running
 against `./...` also compiles and instruments `internal/postgresdb` (sqlc-
 generated query wrappers with no test file of their own, so it always
 reports a flat 0%) and the `example` command package (also untested by
@@ -490,7 +497,12 @@ FCM failures additionally get a structured `*FCMError` (`Code`, `Token`,
 `quota_exceeded`, `unavailable`, `internal`, `third_party_auth_error`)
 with `IsRetryable()`/`IsPermanent()` methods that drive real retry and
 invalid-token decisions in `dispatcher.fcm.go` — not just informational
-classification.
+classification. Classification itself is two-tier: the FCM Admin SDK's own
+structured `messaging.IsX(err)` checks are tried first (precise, and what
+real production FCM errors actually satisfy), falling back to
+substring-matching the error text for anything else — see
+[docs/architecture.md §3.11](docs/architecture.md) for why both tiers
+exist.
 
 ## Limitations / out of scope
 
