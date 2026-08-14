@@ -244,9 +244,10 @@ GORM — a pivot made mid-build after starting with GORM as originally
 planned. `postgres.go` holds the shared connection/pooling logic
 (`connectPostgres`, `PostgresConfig`) every Postgres store's own
 constructor calls into, plus the embedded schema (`//go:embed
-internal/postgresdb/schema.sql`) applied via `CREATE TABLE IF NOT EXISTS`
-on every connect — grnoti has one linear schema and no separate migration
-tool dependency.
+internal/postgresdb/schema.sql`) — grnoti has one linear schema and no
+migration tool of its own. `connectPostgres` never applies this schema
+itself (see below); the exported `SchemaSQL()` returns it as text for the
+consuming application to apply through its own migration pipeline.
 
 Each store's constructor originally dialed its own `*pgxpool.Pool` from
 `PostgresConfig.DSN`, with no way to share one pool across stores — fine
@@ -262,16 +263,24 @@ documentation, not a new exported connection-builder function — see that
 doc's own reasoning for keeping the pool-construction snippet
 application-side rather than growing grnoti's API surface for it).
 
-Sharing one pool across stores also reopened the schema-apply-on-every-
-connect behavior to a real race: `CREATE TABLE/INDEX IF NOT EXISTS` from
-multiple concurrent sessions against a brand-new database is not fully
-race-free in Postgres. `applyPostgresSchema` now wraps the schema exec in
-a Postgres advisory lock (`grnotiSchemaLockKey`, a fixed constant) so
-concurrent connects — multiple stores constructed from goroutines, or
-multiple service replicas racing on first boot — serialize instead of
-racing on catalog DDL. `PostgresConfig.SkipSchemaEnsure` opts a store out
-of schema application entirely, for teams managing grnoti's schema
-through their own migration pipeline instead.
+An earlier iteration of this package had `connectPostgres` apply the
+embedded schema (`CREATE TABLE/INDEX IF NOT EXISTS`) on every connect —
+wrapped in a Postgres advisory lock (`grnotiSchemaLockKey`, a fixed
+constant, via `applyPostgresSchema`) so concurrent connects (multiple
+stores constructed from goroutines, or multiple service replicas racing
+on first boot) serialized instead of racing on catalog DDL, with
+`PostgresConfig.SkipSchemaEnsure` as a per-store opt-out. That required
+the runtime connection's role to have `CREATE` on the target schema,
+which a deliberately least-privilege application role (a common
+production setup — a separate role owns migrations, the app connects
+with a DML-only role) won't have, failing construction with `permission
+denied for schema ...`. `connectPostgres` now never applies schema at
+all — see [docs/postgres.md](postgres.md) for the current pattern and the
+full "why no auto-apply" reasoning. `applyPostgresSchema`/
+`grnotiSchemaLockKey` still exist, unexported, used only by grnoti's own
+test setup now (`ensureTestPostgresSchema` in
+`tokenstore.postgres_test.go`) — the advisory lock still matters there,
+since multiple test files apply schema against the same database.
 
 ## 4. Testing philosophy
 

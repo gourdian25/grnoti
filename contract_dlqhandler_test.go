@@ -130,6 +130,7 @@ func TestDLQHandler_Contract(t *testing.T) {
 	})
 	t.Run("Postgres", func(t *testing.T) {
 		testDLQHandlerContract(t, func(t *testing.T) DLQHandler {
+			ensureTestPostgresSchema(t)
 			h, err := NewPostgresDLQHandler(PostgresDLQHandlerConfig{
 				PostgresConfig: PostgresConfig{DSN: testPostgresDSN},
 				MaxRetries:     3, RetryDelay: 0, MaxRetryDelay: time.Second,

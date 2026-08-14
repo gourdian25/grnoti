@@ -203,9 +203,9 @@ func run() error {
 // ExperimentStore, DLQHandler) together in one backend? Build one
 // *pgxpool.Pool yourself and inject it via PostgresConfig.Pool into each
 // store instead of giving each one its own DSN — see docs/postgres.md
-// for the full pattern, the Close() ownership rules, and how schema
-// application (PostgresConfig.SkipSchemaEnsure) behaves when sharing a
-// pool.
+// for the full pattern, the Close() ownership rules, and how to apply
+// grnoti.SchemaSQL() through your own migration tool before constructing
+// any of them (grnoti never applies its own schema).
 //
 // See CLAUDE.md for the docker run commands each backend's own tests use,
 // and docs/architecture.md for why the package is structured this way.

@@ -1,13 +1,19 @@
 -- File: internal/postgresdb/schema.sql
 --
--- Schema for grnoti's PostgreSQL-backed stores. Applied by connectPostgres
--- (postgres.go) on every store connect, serialized by a Postgres advisory
--- lock (applyPostgresSchema) so concurrent connects don't race on this
--- DDL, with an opt-out via PostgresConfig.SkipSchemaEnsure for teams
--- managing this schema through their own migration pipeline instead — see
--- docs/postgres.md. grnoti has no other schema-migration dependency, and
--- CREATE TABLE IF NOT EXISTS is sufficient for a library with one linear
--- schema.
+-- Schema for grnoti's PostgreSQL-backed stores. Returned as text by
+-- SchemaSQL() (postgres.go) for the consuming application to apply
+-- through its own project's migration tool (golang-migrate, Flyway, a
+-- plain SQL file in CI, ...) -- grnoti itself never applies this; none of
+-- NewPostgresTokenStore/NewPostgresPreferencesStore/
+-- NewPostgresExperimentStore/NewPostgresDLQHandler assume anything beyond
+-- "the tables already exist". CREATE TABLE IF NOT EXISTS is used so
+-- applying it more than once (e.g. re-running your own migration) is
+-- harmless, but that alone does not remove the need for a CREATE-capable
+-- role to run it at least once -- see docs/postgres.md for the
+-- least-privilege-runtime-role rationale and the full pattern. grnoti's
+-- own test setup applies this same text directly (applyPostgresSchema in
+-- postgres.go, serialized by a Postgres advisory lock) so its test suite
+-- stays self-contained without a real migration tool.
 
 CREATE TABLE IF NOT EXISTS grnoti_tokens (
     token        VARCHAR(512) PRIMARY KEY,

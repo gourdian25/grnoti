@@ -2,6 +2,76 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.0] - 2026-08-14
+
+**Breaking**, for the Postgres backend only. Mirrors the fix gourdiantoken
+shipped in its own `v2.4.0` (see gourdiantoken's `CHANGELOG.md`): schema
+auto-apply on every connect required `CREATE` on the target schema, which
+a deliberately least-privilege application role (a common production
+setup — a separate role owns migrations, the app connects with a
+DML-only role) doesn't have, failing construction with `permission
+denied for schema ...` — and this can't be worked around by pre-creating
+the tables some other way, since `CREATE TABLE IF NOT EXISTS` still
+checks `CREATE` privilege before checking whether the table exists, so
+the attempt fails every time regardless. Applied here proactively, for
+consistency across the gourdian25 ecosystem's Postgres-backed libraries,
+ahead of grnoti's own Postgres stores getting a real consumer.
+
+### Changed
+
+- **No `New*Postgres*` constructor applies schema anymore.** Signatures
+  of `NewPostgresTokenStore`, `NewPostgresPreferencesStore`,
+  `NewPostgresExperimentStore`, and `NewPostgresDLQHandler` are
+  unchanged; behavior is: construction now only pings the pool (the
+  caller's own externally-supplied pool, in `Pool` mode). Call
+  `SchemaSQL()` and apply the result through your own project's
+  migration tool before constructing — see docs/postgres.md (rewritten
+  for this change). Existing deployments that relied on the implicit
+  auto-apply need to add that migration step; the schema itself is
+  unchanged (still `CREATE TABLE/INDEX IF NOT EXISTS`, still the same
+  four `grnoti_`-prefixed tables: `grnoti_tokens`, `grnoti_preferences`,
+  `grnoti_experiments`, `grnoti_dlq`).
+- **`PostgresConfig.SkipSchemaEnsure` removed.** Added in `v0.1.0` as a
+  per-store opt-out from schema auto-apply; this release removes
+  auto-apply itself instead, so the flag no longer has anything to opt
+  out of. grnoti is pre-1.0, so this ships as a straight field removal
+  rather than a deprecate-then-remove cycle.
+
+### Added
+
+- **`SchemaSQL() string`**, returning grnoti's Postgres schema as text —
+  covering all four Postgres-backed stores' tables in one call, since
+  they share a single `internal/postgresdb/schema.sql` — for applying
+  through your own migration tool (see docs/postgres.md).
+
+### Testing
+
+- Every `newTestPostgresTokenStore`/`newTestPostgresPreferencesStore`/
+  `newTestPostgresExperimentStore`/`newTestPostgresDLQHandler` test
+  helper, plus every `contract_*_test.go` "Postgres" subtest, now applies
+  schema explicitly via a new shared `ensureTestPostgresSchema` helper
+  (`tokenstore.postgres_test.go`) before constructing, since construction
+  itself no longer does. `postgres_test.go`'s
+  `TestConnectPostgres_SharedPool` similarly now applies schema itself
+  before asserting `connectPostgres`'s shared-pool passthrough behavior,
+  rather than relying on `connectPostgres` to have applied it.
+
+### Fixed
+
+- `version.go` was still hardcoded to `v0.1.0` despite `v0.1.1` already
+  being the actual most recent tag; corrected as part of this bump.
+
+### Documentation
+
+- `docs/postgres.md`'s schema-application section rewritten around
+  `SchemaSQL()` and "why no auto-apply," dropping `SkipSchemaEnsure`
+  entirely.
+- `docs/architecture.md` §3.12, `README.md`, `CLAUDE.md`, and
+  `example/main.go`'s "Using real backends instead" comment updated to
+  match — every mention of schema auto-apply or `SkipSchemaEnsure`
+  outside this file's own historical `[0.1.0]` entry now describes the
+  current (never-auto-apply) behavior.
+
 ## [0.1.0] - 2026-07-23
 
 ### Added

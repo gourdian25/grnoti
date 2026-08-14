@@ -432,18 +432,17 @@ if err != nil {
 }
 defer pool.Close() // grnoti never closes a Pool it didn't dial itself
 
+// grnoti.SchemaSQL() applied via your own migration tool beforehand --
+// see docs/postgres.md.
 tokenStore, err := grnoti.NewPostgresTokenStore(grnoti.PostgresConfig{Pool: pool})
-preferencesStore, err := grnoti.NewPostgresPreferencesStore(grnoti.PostgresConfig{
-    Pool: pool, SkipSchemaEnsure: true, // schema already applied by tokenStore above
-})
+preferencesStore, err := grnoti.NewPostgresPreferencesStore(grnoti.PostgresConfig{Pool: pool})
 ```
 
-`DSN` and `Pool` are mutually exclusive — set exactly one.
-`PostgresConfig.SkipSchemaEnsure` skips grnoti's built-in schema
-application for stores managed by your own migration pipeline instead.
+`DSN` and `Pool` are mutually exclusive — set exactly one. grnoti never
+applies its own schema — call `grnoti.SchemaSQL()` and apply the result
+through your own project's migration tool before constructing any store.
 See [docs/postgres.md](docs/postgres.md) for the full pattern, `Close()`
-ownership rules, and the concurrency-safety guarantee (schema application
-is now serialized via a Postgres advisory lock).
+ownership rules, and why there's no built-in auto-apply.
 
 ## Why storage-agnostic interfaces
 
@@ -595,13 +594,14 @@ exist.
   FCM client is constructed and authenticated by the caller via the
   official Firebase Admin SDK — key management stays outside this
   library's scope.
-- **Postgres schema management is additive only.** Every `New*Postgres*`
-  constructor applies `CREATE TABLE/INDEX IF NOT EXISTS` on connect; there
-  is no down-migration, no versioning, and no support for evolving the
-  schema beyond that. An `ALTER TABLE`, column type change, or backfill is
-  entirely your own migration tool's job — set
-  `PostgresConfig.SkipSchemaEnsure: true` once you own the schema that
-  way. See [docs/postgres.md](docs/postgres.md).
+- **Postgres schema management is entirely your own.** No `New*Postgres*`
+  constructor ever applies grnoti's schema — `grnoti.SchemaSQL()` returns
+  it as text (plain `CREATE TABLE/INDEX IF NOT EXISTS`) for you to apply
+  through your own migration tool before constructing any Postgres store.
+  It's additive only: there is no down-migration, no versioning, and no
+  support for evolving the schema beyond that — an `ALTER TABLE`, column
+  type change, or backfill is entirely your own migration tool's job too.
+  See [docs/postgres.md](docs/postgres.md).
 
 See [SECURITY.md](SECURITY.md) for the complete scope-notes list this
 section draws from.

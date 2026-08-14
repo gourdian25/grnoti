@@ -117,6 +117,13 @@ func TestConnectPostgres_SharedPool(t *testing.T) {
 		t.Skipf("PostgreSQL not available, skipping: %v", err)
 	}
 
+	// connectPostgres no longer applies schema itself (see its own doc
+	// comment) -- apply it directly here so the query below has a real
+	// table to hit, rather than proving anything about connectPostgres.
+	if err := applyPostgresSchema(context.Background(), externalPool); err != nil {
+		t.Fatalf("applyPostgresSchema: %v", err)
+	}
+
 	pool, queries, ownsPool, err := connectPostgres(context.Background(), PostgresConfig{Pool: externalPool}, "TestComponent")
 	if err != nil {
 		t.Fatalf("connectPostgres(Pool: externalPool): %v", err)
@@ -128,8 +135,9 @@ func TestConnectPostgres_SharedPool(t *testing.T) {
 		t.Error("connectPostgres returned a different pool than the one supplied via cfg.Pool")
 	}
 
-	// The schema must actually have been applied against the shared pool
-	// — spot-check one of grnoti's tables exists and is queryable.
+	// Spot-check the pool/queries connectPostgres returned are the live,
+	// usable ones (i.e. connectPostgres didn't dial a redundant pool of
+	// its own despite Pool being set).
 	if _, err := queries.GetActiveTokensByUserID(context.Background(), "no-such-user"); err != nil {
 		t.Errorf("query against shared pool after connectPostgres: %v", err)
 	}

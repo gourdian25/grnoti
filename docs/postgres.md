@@ -70,15 +70,6 @@ set exactly one. `MaxConns`/`MinConns`/`MaxConnLifetime`/`ConnectTimeout`
 only apply when connecting via `DSN`; tune the pool yourself before
 passing it in via `Pool`.
 
-Construct your Postgres stores **sequentially**, not concurrently
-(e.g. not from an `errgroup`), even when sharing one pool. Schema
-application is safe under concurrent connects now (see below), but
-there's no benefit to parallelizing four calls that are dominated by the
-same handful of round-trips against the same pool, and it removes any
-temptation to fan out store construction elsewhere in the codebase where
-schema application might not be lock-guarded (e.g. a future backend that
-doesn't go through `connectPostgres` at all).
-
 ## `Close()` ownership
 
 grnoti never closes a pool it didn't create. Each store's `Close()` only
@@ -88,44 +79,66 @@ from it is a no-op with respect to the pool — closing it is entirely your
 backend's job, typically once at shutdown, after every store using it is
 done.
 
-## Schema application and `SkipSchemaEnsure`
+## Applying the schema — required, and always your job
 
-By default, every `New*Postgres*` call applies grnoti's embedded schema
-(`internal/postgresdb/schema.sql`, plain `CREATE TABLE/INDEX IF NOT
-EXISTS`) before returning — no separate migration step needed for a
-first-time setup. This is now safe under concurrent connects: schema
-application acquires a Postgres advisory lock first, so N stores
-connecting at once (or N service replicas booting simultaneously against
-a fresh database) serialize instead of racing on the same DDL.
+None of `NewPostgresTokenStore`, `NewPostgresPreferencesStore`,
+`NewPostgresExperimentStore`, or `NewPostgresDLQHandler` ever run `CREATE
+TABLE`/`CREATE INDEX` — grnoti has no migration tool of its own and
+doesn't try to be one. The four tables each one queries (`grnoti_tokens`,
+`grnoti_preferences`, `grnoti_experiments`, `grnoti_dlq` — one shared
+`internal/postgresdb/schema.sql`, not four separate schemas) must already
+exist before you construct any of them, or every real store call
+(`SaveToken`, `GetPreferences`, `ClaimRetryableEvents`, ...) fails with a
+plain Postgres "relation does not exist" error — construction itself
+still succeeds, since it only pings the pool.
 
-If you inject one shared `Pool` into all four stores, each one still
-independently re-applies the (now lock-guarded, so correct, just not
-free) schema check by default. To skip the redundant round-trips, set
-`SkipSchemaEnsure: true` on all but one store's config:
+Call `grnoti.SchemaSQL()` to get the exact schema as text, and apply it
+through whatever migration tool your own project already uses:
 
 ```go
-tokenStore, err := grnoti.NewPostgresTokenStore(grnoti.PostgresConfig{Pool: pool})               // applies schema
-preferencesStore, err := grnoti.NewPostgresPreferencesStore(grnoti.PostgresConfig{Pool: pool, SkipSchemaEnsure: true})
-experimentStore, err := grnoti.NewPostgresExperimentStore(grnoti.PostgresConfig{Pool: pool, SkipSchemaEnsure: true})
+fmt.Println(grnoti.SchemaSQL())
 ```
 
-### If you run your own migration pipeline
+Paste that into a new migration file (golang-migrate, Flyway, a plain
+`.sql` file run once in CI, whatever you already have) and run it with
+your project's normal migration process, once, before your application
+first constructs any of these four stores — regardless of whether you
+give each store its own `DSN` or share one `Pool` across all four, per
+"Why share one pool" above.
 
-Set `SkipSchemaEnsure: true` on every store's config so grnoti never
-touches schema in that environment. `internal/postgresdb/schema.sql` is
-plain, idempotent DDL with no grnoti-specific magic — copy its statements
-into your own migration tool (golang-migrate, Flyway, a plain SQL file
-run in CI, whatever you already use) as a one-time "up" migration.
+### Why no auto-apply
 
-### What grnoti's schema handling does *not* do
+An earlier iteration of this package had every `New*Postgres*` constructor
+apply its schema automatically on every connect, with a
+`PostgresConfig.SkipSchemaEnsure` flag to opt individual stores out of it.
+That works fine as long as the pool's connection role has `CREATE` on the
+target schema — but a common, deliberate production setup is the
+opposite: one Postgres role owns migrations (`CREATE`/`ALTER`/`DROP`),
+while the application's own runtime connection uses a separate,
+least-privilege role with only `SELECT`/`INSERT`/`UPDATE`/`DELETE` on
+already-existing tables. Against a role like that, auto-apply failed
+loudly at construction with `permission denied for schema ...` — and
+pre-creating the tables through some other path didn't help either, since
+`CREATE TABLE IF NOT EXISTS` still checks `CREATE` privilege before
+checking whether the table exists, so the attempt itself failed every
+time, not just the first.
+
+Rather than keep the opt-out flag, grnoti simply never auto-applies
+anymore: you always apply the schema yourself, through your own project's
+existing migration pipeline, with whatever role already owns that
+pipeline. This keeps grnoti's runtime connection requirements identical
+regardless of how your application's own roles are set up, and means
+there's exactly one way this works, not a default plus an exception to
+remember.
+
+### What `SchemaSQL()` does *not* do
 
 It only ever adds (`CREATE ... IF NOT EXISTS`). There's no down-migration,
 no versioning, and no support for evolving the schema beyond that — an
 `ALTER TABLE`, a column type change, or a backfill is entirely your own
-migration tool's responsibility, independent of and unaffected by
-grnoti's auto-apply. If your application needs to evolve grnoti's tables
-beyond what `schema.sql` defines, manage that through your own migrations
-and set `SkipSchemaEnsure: true` everywhere once you do.
+migration tool's responsibility. If you upgrade grnoti and its schema
+changes, `CHANGELOG.md` documents it; re-sync your vendored copy by hand
+the same way you'd pick up any other dependency's breaking schema change.
 
 ## `ConnectTimeout`
 
