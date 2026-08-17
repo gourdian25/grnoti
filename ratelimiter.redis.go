@@ -40,19 +40,33 @@ const (
 // race — the entire reason this file exists instead of just reusing
 // localRateLimiter's golang.org/x/time/rate against a shared key.
 //
+// "now" is read once server-side via redis.call("TIME"), NOT passed in as
+// a client-supplied argument — deliberately: this script is evaluated by
+// every replica of a multi-process deployment (the entire point of this
+// backend over localRateLimiter), and those replicas' wall clocks are not
+// guaranteed to agree. A replica with a fast clock computing its own
+// elapsed-time-since-last-refill would grant itself a larger refill than a
+// replica with an accurate clock, silently corrupting the shared bucket —
+// exactly the correctness property a distributed rate limiter exists to
+// provide. Reading Redis's own clock makes every caller agree on "now" by
+// construction, at the cost of one extra redis.call inside the script
+// (still one network round trip total — TIME runs server-side). Mirrors
+// grpop's twoTierTokenBucketScript, which establishes this same pattern.
+//
 // KEYS[1] = bucket key
 // ARGV[1] = capacity (burst size)
 // ARGV[2] = refill rate, tokens/second
-// ARGV[3] = now, unix seconds as a float
-// ARGV[4] = key TTL, seconds
+// ARGV[3] = key TTL, seconds
 //
 // Returns 1 if a token was consumed (allowed), 0 otherwise.
 var tokenBucketScript = goredis.NewScript(`
 local key = KEYS[1]
 local capacity = tonumber(ARGV[1])
 local refillRate = tonumber(ARGV[2])
-local now = tonumber(ARGV[3])
-local ttl = tonumber(ARGV[4])
+local ttl = tonumber(ARGV[3])
+
+local t = redis.call("TIME")
+local now = tonumber(t[1]) + tonumber(t[2]) / 1e6
 
 local bucket = redis.call("HMGET", key, "tokens", "updated_at")
 local tokens = tonumber(bucket[1])
@@ -229,8 +243,7 @@ func (r *redisRateLimiter) Allow(ctx context.Context) (bool, error) {
 	rate, burst := r.requestsPerSec, r.burstSize
 	r.mu.RUnlock()
 
-	now := float64(time.Now().UnixNano()) / 1e9
-	res, err := tokenBucketScript.Run(ctx, r.client, []string{r.key}, burst, rate, now, int(redisRateLimiterKeyTTL.Seconds())).Result()
+	res, err := tokenBucketScript.Run(ctx, r.client, []string{r.key}, burst, rate, int(redisRateLimiterKeyTTL.Seconds())).Result()
 	if err != nil {
 		return false, fmt.Errorf("grnoti: redis rate limiter eval: %w", ErrBackendUnavailable)
 	}
