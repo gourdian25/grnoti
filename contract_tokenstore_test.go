@@ -129,6 +129,7 @@ func TestTokenStore_Contract(t *testing.T) {
 	})
 	t.Run("Postgres", func(t *testing.T) {
 		testTokenStoreContract(t, func(t *testing.T) TokenStore {
+			ensureTestPostgresSchema(t)
 			store, err := NewPostgresTokenStore(PostgresConfig{DSN: testPostgresDSN})
 			if err != nil {
 				t.Skipf("PostgreSQL not available, skipping: %v", err)

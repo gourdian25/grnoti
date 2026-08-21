@@ -85,6 +85,7 @@ func TestPreferencesStore_Contract(t *testing.T) {
 	})
 	t.Run("Postgres", func(t *testing.T) {
 		testPreferencesStoreContract(t, func(t *testing.T) PreferencesStore {
+			ensureTestPostgresSchema(t)
 			store, err := NewPostgresPreferencesStore(PostgresConfig{DSN: testPostgresDSN})
 			if err != nil {
 				t.Skipf("PostgreSQL not available, skipping: %v", err)

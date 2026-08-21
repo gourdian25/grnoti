@@ -11,8 +11,34 @@ import (
 
 const testPostgresDSN = "host=localhost user=postgres_user password=postgres_password dbname=grnoti_test port=5432 sslmode=disable"
 
+// ensureTestPostgresSchema applies grnoti's Postgres schema against
+// testPostgresDSN. None of the four NewPostgres* constructors apply
+// schema themselves anymore (see connectPostgres's own doc comment in
+// postgres.go) -- every one of grnoti's own Postgres test helpers below,
+// and every "Postgres" contract-test subtest, calls this first so the
+// suite stays self-contained against a fresh database without needing a
+// real migration tool. Safe to call repeatedly and from multiple test
+// files: applyPostgresSchema is CREATE TABLE/INDEX IF NOT EXISTS,
+// serialized by its own Postgres advisory lock.
+func ensureTestPostgresSchema(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, testPostgresDSN)
+	if err != nil {
+		t.Skipf("PostgreSQL not available, skipping: %v", err)
+	}
+	defer pool.Close()
+	if err := pool.Ping(ctx); err != nil {
+		t.Skipf("PostgreSQL not available, skipping: %v", err)
+	}
+	if err := applyPostgresSchema(ctx, pool); err != nil {
+		t.Fatalf("applyPostgresSchema: %v", err)
+	}
+}
+
 func newTestPostgresTokenStore(t *testing.T) TokenStore {
 	t.Helper()
+	ensureTestPostgresSchema(t)
 	store, err := NewPostgresTokenStore(PostgresConfig{DSN: testPostgresDSN})
 	if err != nil {
 		t.Skipf("PostgreSQL not available, skipping: %v", err)
@@ -148,6 +174,7 @@ func TestPostgresTokenStore_GenericQueryError(t *testing.T) {
 // out from under each other — only a store that dialed its own pool from
 // DSN should ever close it.
 func TestPostgresStores_SharedPool_CloseDoesNotAffectSiblingStore(t *testing.T) {
+	ensureTestPostgresSchema(t)
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, testPostgresDSN)
 	if err != nil {

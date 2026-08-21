@@ -13,6 +13,7 @@ import (
 
 func newTestPostgresDLQHandler(t *testing.T, maxRetries int, retryDelay time.Duration) DLQHandler {
 	t.Helper()
+	ensureTestPostgresSchema(t)
 	h, err := NewPostgresDLQHandler(PostgresDLQHandlerConfig{
 		PostgresConfig: PostgresConfig{DSN: testPostgresDSN},
 		MaxRetries:     maxRetries, RetryDelay: retryDelay, MaxRetryDelay: time.Second,

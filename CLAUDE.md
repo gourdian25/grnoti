@@ -115,15 +115,20 @@ docker exec gourdian-mongo-auth mongosh -u root -p mongo_password \
 docker run -d --name gourdian-kafka -p 9092:9092 apache/kafka:3.7.0
 ```
 
-Postgres needs no separate migration step: every Postgres-backed store's
-constructor applies `internal/postgresdb/schema.sql` via `CREATE TABLE IF
-NOT EXISTS` on connect (see `connectPostgres` in `postgres.go`), guarded
-by a Postgres advisory lock so concurrent connects don't race on the DDL
-— opt out per store with `PostgresConfig.SkipSchemaEnsure` if you manage
-this schema through your own migration pipeline instead (see
-[docs/postgres.md](docs/postgres.md)). Mongo
-indexes are similarly ensured on connect by each Mongo store's own
-constructor.
+Postgres schema is not auto-applied: no Postgres-backed store's
+constructor touches `internal/postgresdb/schema.sql` (see
+`connectPostgres` in `postgres.go`, and `SchemaSQL()`'s own doc comment
+for why) — a real application applies `grnoti.SchemaSQL()` through its
+own migration tool once, before ever constructing one of these stores
+(see [docs/postgres.md](docs/postgres.md)). grnoti's own test suite
+handles this for you automatically: every `newTestPostgres*` helper and
+every "Postgres" contract-test subtest calls `ensureTestPostgresSchema`
+(`tokenstore.postgres_test.go`) first, which applies the schema via the
+unexported `applyPostgresSchema`, guarded by a Postgres advisory lock so
+concurrent test setup doesn't race on the DDL — so `go test`/`make test`
+work against a freshly created `grnoti_test` database with no manual
+migration step. Mongo indexes are still ensured on connect by each Mongo
+store's own constructor — that part is unaffected.
 
 Connection details the tests expect (see `const test*` in each `*_test.go`
 file if these ever drift):

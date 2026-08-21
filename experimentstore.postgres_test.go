@@ -9,6 +9,7 @@ import (
 
 func newTestPostgresExperimentStore(t *testing.T) ExperimentStore {
 	t.Helper()
+	ensureTestPostgresSchema(t)
 	store, err := NewPostgresExperimentStore(PostgresConfig{DSN: testPostgresDSN})
 	if err != nil {
 		t.Skipf("PostgreSQL not available, skipping: %v", err)
