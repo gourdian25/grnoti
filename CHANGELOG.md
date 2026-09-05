@@ -2,6 +2,37 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.3.0] - 2026-09-05
+
+Migrates the Mongo-backed DLQ and token-store backends from
+`go.mongodb.org/mongo-driver` (v1, upstream-deprecated) to
+`go.mongodb.org/mongo-driver/v2`, matching grsentry's already-completed
+migration and bringing grnoti in line with the rest of the `gourdian25`
+org. `MongoDLQHandlerConfig`/`MongoTokenStoreConfig` never exposed a driver
+type in their exported fields, so this is an internal dependency swap
+only — no change to `NewMongoDLQHandler`'s or `NewMongoTokenStore`'s
+signature or behavior for grnoti's own consumers.
+
+### Changed
+
+- `dlq.mongo.go` and `tokenstore.mongo.go` now import
+  `go.mongodb.org/mongo-driver/v2/{bson,mongo,mongo/options}`.
+  `mongo.Connect` dropped its `context.Context` parameter in v2 (it never
+  blocked on the network — `Ping` remains the real connectivity check), so
+  the 10s connect timeout that used to bound `Connect` now bounds the
+  subsequent `Ping` call instead. v1's generic `options.Update()` is
+  removed in v2 (replaced by separate `options.UpdateOne()`/
+  `options.UpdateMany()` builders); both files' upserts, each paired with
+  `UpdateOne`, now use `options.UpdateOne().SetUpsert(true)`.
+  `mongo.ErrNoDocuments` and `options.ReturnDocument`/`options.After` are
+  unchanged.
+- `go.mod`: `go.mongodb.org/mongo-driver v1.17.9` replaced with
+  `go.mongodb.org/mongo-driver/v2 v2.8.0` as a direct dependency. Note: v1
+  still appears as an indirect dependency in `go.mod`/`go.sum` — this comes
+  from grnoti's pinned `github.com/gourdian25/grcache v0.3.1`, which
+  predates grcache's own v2 migration; it will drop once grnoti's
+  `grcache` requirement is bumped to grcache's next published version.
+
 ## [0.2.0] - 2026-08-14
 
 **Breaking**, for the Postgres backend only. Mirrors the fix gourdiantoken

@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 // contractCollectionName derives a Mongo collection name from the
@@ -41,7 +41,7 @@ func cleanupContractCollection(t *testing.T, database, collection string) {
 	t.Helper()
 	t.Cleanup(func() {
 		ctx := context.Background()
-		client, err := mongo.Connect(ctx, options.Client().ApplyURI(testMongoURI))
+		client, err := mongo.Connect(options.Client().ApplyURI(testMongoURI))
 		if err != nil {
 			return
 		}

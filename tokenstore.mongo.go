@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 // DefaultTokenCollection is the collection name used when
@@ -82,9 +82,12 @@ func NewMongoTokenStore(cfg MongoTokenStoreConfig) (TokenStore, error) {
 	}
 	logger := OrNop(cfg.Logger)
 
+	// v2's mongo.Connect no longer takes a context or blocks on the network;
+	// Ping is the real connectivity check, so the timeout that used to bound
+	// Connect now bounds that instead (matching grsentry's pkg/grmongo).
 	connectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	client, err := mongo.Connect(connectCtx, options.Client().ApplyURI(cfg.URI))
+	client, err := mongo.Connect(options.Client().ApplyURI(cfg.URI))
 	if err != nil {
 		return nil, fmt.Errorf("grnoti/mongo: connect: %w", errors.Join(err, ErrBackendUnavailable))
 	}
@@ -205,7 +208,7 @@ func (s *mongoTokenStore) SaveToken(ctx context.Context, token DeviceToken) erro
 			},
 			"$setOnInsert": bson.M{"created_at": now},
 		},
-		options.Update().SetUpsert(true),
+		options.UpdateOne().SetUpsert(true),
 	)
 	if err != nil {
 		return fmt.Errorf("grnoti/mongo: save token: %w", errors.Join(err, ErrBackendUnavailable))
