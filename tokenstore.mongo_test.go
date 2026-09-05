@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 const testMongoURI = "mongodb://root:mongo_password@localhost:27018/?directConnection=true"
