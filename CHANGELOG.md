@@ -27,11 +27,10 @@ signature or behavior for grnoti's own consumers.
   `mongo.ErrNoDocuments` and `options.ReturnDocument`/`options.After` are
   unchanged.
 - `go.mod`: `go.mongodb.org/mongo-driver v1.17.9` replaced with
-  `go.mongodb.org/mongo-driver/v2 v2.8.0` as a direct dependency. Note: v1
-  still appears as an indirect dependency in `go.mod`/`go.sum` — this comes
-  from grnoti's pinned `github.com/gourdian25/grcache v0.3.1`, which
-  predates grcache's own v2 migration; it will drop once grnoti's
-  `grcache` requirement is bumped to grcache's next published version.
+  `go.mongodb.org/mongo-driver/v2 v2.8.0` as a direct dependency.
+  `github.com/gourdian25/grcache` bumped from `v0.3.1` to `v0.5.0` to pick
+  up grcache's own v2 migration — v1 no longer appears anywhere in
+  `go.mod`/`go.sum`, direct or indirect.
 
 ## [0.2.0] - 2026-08-14
 
