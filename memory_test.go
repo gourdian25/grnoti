@@ -10,69 +10,69 @@ import (
 	"time"
 )
 
-func TestMemoryTokenStore_SaveAndGet(t *testing.T) {
-	store := NewMemoryTokenStore()
+func TestMemoryDeviceStore_SaveAndGet(t *testing.T) {
+	store := NewMemoryDeviceStore()
 	ctx := context.Background()
 
-	if err := store.SaveToken(ctx, DeviceToken{Token: "t1", UserID: "u1", Platform: PlatformAndroid}); err != nil {
-		t.Fatalf("SaveToken: %v", err)
+	if err := store.SaveDevice(ctx, Device{FID: testFID("t1"), UserID: "u1", Platform: PlatformAndroid}); err != nil {
+		t.Fatalf("SaveDevice: %v", err)
 	}
 
-	tokens, err := store.GetActiveTokens(ctx, "u1")
+	devices, err := store.GetActiveDevices(ctx, "u1")
 	if err != nil {
-		t.Fatalf("GetActiveTokens: %v", err)
+		t.Fatalf("GetActiveDevices: %v", err)
 	}
-	if len(tokens) != 1 || tokens[0].Token != "t1" {
-		t.Fatalf("GetActiveTokens() = %v, want [t1]", tokens)
+	if len(devices) != 1 || devices[0].FID != testFID("t1") {
+		t.Fatalf("GetActiveDevices() = %v, want [t1]", devices)
 	}
 }
 
-func TestMemoryTokenStore_MarkInvalid(t *testing.T) {
-	store := NewMemoryTokenStore()
+func TestMemoryDeviceStore_MarkInvalid(t *testing.T) {
+	store := NewMemoryDeviceStore()
 	ctx := context.Background()
-	_ = store.SaveToken(ctx, DeviceToken{Token: "t1", UserID: "u1"})
+	_ = store.SaveDevice(ctx, Device{FID: testFID("t1"), UserID: "u1"})
 
-	if err := store.MarkInvalid(ctx, "t1"); err != nil {
+	if err := store.MarkInvalid(ctx, testFID("t1")); err != nil {
 		t.Fatalf("MarkInvalid: %v", err)
 	}
-	tokens, _ := store.GetActiveTokens(ctx, "u1")
-	if len(tokens) != 0 {
-		t.Fatalf("GetActiveTokens after MarkInvalid = %v, want empty", tokens)
+	devices, _ := store.GetActiveDevices(ctx, "u1")
+	if len(devices) != 0 {
+		t.Fatalf("GetActiveDevices after MarkInvalid = %v, want empty", devices)
 	}
-	// Marking an already-invalid (or nonexistent) token is not an error.
+	// Marking an already-invalid (or nonexistent) FID is not an error.
 	if err := store.MarkInvalid(ctx, "never-existed"); err != nil {
 		t.Fatalf("MarkInvalid(nonexistent): %v", err)
 	}
 }
 
-func TestMemoryTokenStore_GetActiveTokensBatch(t *testing.T) {
-	store := NewMemoryTokenStore()
+func TestMemoryDeviceStore_GetActiveDevicesBatch(t *testing.T) {
+	store := NewMemoryDeviceStore()
 	ctx := context.Background()
-	_ = store.SaveToken(ctx, DeviceToken{Token: "t1", UserID: "u1"})
-	_ = store.SaveToken(ctx, DeviceToken{Token: "t2", UserID: "u2"})
-	_ = store.SaveToken(ctx, DeviceToken{Token: "t3", UserID: "u2"})
-	_ = store.MarkInvalid(ctx, "t3") // must be filtered out of the batch result
+	_ = store.SaveDevice(ctx, Device{FID: testFID("t1"), UserID: "u1"})
+	_ = store.SaveDevice(ctx, Device{FID: testFID("t2"), UserID: "u2"})
+	_ = store.SaveDevice(ctx, Device{FID: testFID("t3"), UserID: "u2"})
+	_ = store.MarkInvalid(ctx, testFID("t3")) // must be filtered out of the batch result
 
-	out, err := store.GetActiveTokensBatch(ctx, []string{"u1", "u2", "u3"})
+	out, err := store.GetActiveDevicesBatch(ctx, []string{"u1", "u2", "u3"})
 	if err != nil {
-		t.Fatalf("GetActiveTokensBatch: %v", err)
+		t.Fatalf("GetActiveDevicesBatch: %v", err)
 	}
 	if len(out) != 2 {
-		t.Fatalf("GetActiveTokensBatch() = %v, want 2 users", out)
+		t.Fatalf("GetActiveDevicesBatch() = %v, want 2 users", out)
 	}
 	if len(out["u2"]) != 1 {
-		t.Fatalf("GetActiveTokensBatch()[u2] = %v, want 1 active token (t3 is inactive)", out["u2"])
+		t.Fatalf("GetActiveDevicesBatch()[u2] = %v, want 1 active device (t3 is inactive)", out["u2"])
 	}
 }
 
-func TestMemoryTokenStore_SaveToken_PreservesCreatedAtOnUpdate(t *testing.T) {
-	store := NewMemoryTokenStore()
+func TestMemoryDeviceStore_SaveDevice_PreservesCreatedAtOnUpdate(t *testing.T) {
+	store := NewMemoryDeviceStore()
 	ctx := context.Background()
-	_ = store.SaveToken(ctx, DeviceToken{Token: "t1", UserID: "u1"})
-	first, _ := store.GetActiveTokens(ctx, "u1")
+	_ = store.SaveDevice(ctx, Device{FID: testFID("t1"), UserID: "u1"})
+	first, _ := store.GetActiveDevices(ctx, "u1")
 
-	_ = store.SaveToken(ctx, DeviceToken{Token: "t1", UserID: "u1", AppVersion: "2.0"})
-	second, _ := store.GetActiveTokens(ctx, "u1")
+	_ = store.SaveDevice(ctx, Device{FID: testFID("t1"), UserID: "u1", AppVersion: "2.0"})
+	second, _ := store.GetActiveDevices(ctx, "u1")
 
 	if !second[0].CreatedAt.Equal(first[0].CreatedAt) {
 		t.Fatalf("CreatedAt changed across a re-save: first=%v second=%v", first[0].CreatedAt, second[0].CreatedAt)

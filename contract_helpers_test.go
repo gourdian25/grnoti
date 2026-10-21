@@ -12,6 +12,19 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
+// testFID returns a valid FID (see validFID) naming label, so a test can
+// keep calling its devices "t1", "contract-t2", ... even though every
+// DeviceStore's SaveDevice and Event.Validate refuse anything that is not
+// FID-shaped. label is padded with '_', which a label may not contain, so
+// two labels never map to the same FID ("t1" and "t1_" would otherwise).
+func testFID(label string) string {
+	fid := "f" + label + strings.Repeat("_", max(0, 21-len(label)))
+	if strings.Contains(label, "_") || !validFID(fid) {
+		panic("testFID: label must be 1-21 characters of [A-Za-z0-9-], got " + label)
+	}
+	return fid
+}
+
 // contractCollectionName derives a Mongo collection name from the
 // currently-executing subtest, and cleanupContractCollection (registered
 // alongside every call site) drops it at test end.

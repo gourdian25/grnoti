@@ -14,7 +14,7 @@
 // Swapping in a real backend is a one-line change at its construction site
 // — see the "Using real backends instead" comment near the bottom of this
 // file for the exact constructor call each swap needs
-// (NewMongoTokenStore, NewPostgresPreferencesStore, NewFCMDispatcher, ...).
+// (NewMongoDeviceStore, NewPostgresPreferencesStore, NewFCMDispatcher, ...).
 package main
 
 import (
@@ -39,20 +39,20 @@ const EventTypeOrderShipped grnoti.EventType = "order_shipped"
 // backend.
 type loggingDispatcher struct{}
 
-func (loggingDispatcher) Send(_ context.Context, tokens []grnoti.DeviceToken, msg grnoti.Message) (grnoti.DispatchResult, error) {
+func (loggingDispatcher) Send(_ context.Context, devices []grnoti.Device, msg grnoti.Message) (grnoti.DispatchResult, error) {
 	result := grnoti.DispatchResult{
-		SuccessCount:      len(tokens),
-		SuccessByPlatform: make(map[grnoti.Platform]int, len(tokens)),
+		SuccessCount:      len(devices),
+		SuccessByPlatform: make(map[grnoti.Platform]int, len(devices)),
 	}
-	for _, tok := range tokens {
-		fmt.Printf("  [push] -> token=%s platform=%s title=%q body=%q\n", tok.Token, tok.Platform, msg.Title, msg.Body)
-		result.SuccessByPlatform[tok.Platform]++
+	for _, dev := range devices {
+		fmt.Printf("  [push] -> fid=%s platform=%s title=%q body=%q\n", dev.FID, dev.Platform, msg.Title, msg.Body)
+		result.SuccessByPlatform[dev.Platform]++
 	}
 	return result, nil
 }
 
-func (loggingDispatcher) SendToToken(_ context.Context, token grnoti.DeviceToken, msg grnoti.Message) error {
-	fmt.Printf("  [push] -> token=%s platform=%s title=%q body=%q\n", token.Token, token.Platform, msg.Title, msg.Body)
+func (loggingDispatcher) SendToDevice(_ context.Context, device grnoti.Device, msg grnoti.Message) error {
+	fmt.Printf("  [push] -> fid=%s platform=%s title=%q body=%q\n", device.FID, device.Platform, msg.Title, msg.Body)
 	return nil
 }
 
@@ -93,7 +93,7 @@ func run() error {
 	// just the in-memory/local variant rather than the Mongo/Postgres/Redis
 	// one a production deployment would use. ---
 
-	tokenStore := grnoti.NewMemoryTokenStore()
+	deviceStore := grnoti.NewMemoryDeviceStore()
 	preferencesStore := grnoti.NewMemoryPreferencesStore()
 	dlqHandler := grnoti.NewMemoryDLQHandler(3, time.Minute, 10*time.Minute)
 
@@ -111,7 +111,7 @@ func run() error {
 	config.EnableDLQ = true
 
 	svc, err := grnoti.NewNotificationService(grnoti.ServiceDeps{
-		TokenStore:        tokenStore,
+		DeviceStore:       deviceStore,
 		Dispatcher:        loggingDispatcher{},
 		Templates:         templates,
 		Idempotency:       idempotencyStore,
@@ -126,14 +126,15 @@ func run() error {
 
 	// --- 4. Seed a user with a registered device and their notification
 	// preferences, matching what an application's own signup/login and
-	// settings flows would normally do via TokenStore.SaveToken and
+	// settings flows would normally do via DeviceStore.SaveDevice and
 	// PreferencesStore.SavePreferences directly. ---
 
 	const userID = "user-42"
-	if err := tokenStore.SaveToken(ctx, grnoti.DeviceToken{
-		Token: "example-device-token", UserID: userID, Platform: grnoti.PlatformAndroid,
+	if err := deviceStore.SaveDevice(ctx, grnoti.Device{
+		// An FID: what a client SDK hands its onRegistered callback.
+		FID: "fExampleInstallId012_-", UserID: userID, Platform: grnoti.PlatformAndroid,
 	}); err != nil {
-		return fmt.Errorf("SaveToken: %w", err)
+		return fmt.Errorf("SaveDevice: %w", err)
 	}
 	if err := preferencesStore.SavePreferences(ctx, &grnoti.NotificationPreferences{
 		UserID: userID, GlobalEnabled: true, Locale: "en",
@@ -154,8 +155,8 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("ProcessEvent: %w", err)
 	}
-	fmt.Printf("  result: tokens=%d success=%d failure=%d skipped=%v\n\n",
-		result.TokenCount, result.DispatchResult.SuccessCount, result.DispatchResult.FailureCount, result.Skipped)
+	fmt.Printf("  result: devices=%d success=%d failure=%d skipped=%v\n\n",
+		result.DeviceCount, result.DispatchResult.SuccessCount, result.DispatchResult.FailureCount, result.Skipped)
 
 	fmt.Println("--- event 2: same EventID resubmitted, idempotency short-circuits it ---")
 	result, err = svc.ProcessEvent(ctx, grnoti.Event{
@@ -170,7 +171,7 @@ func run() error {
 	}
 	fmt.Printf("  result: skipped=%v reason=%q\n\n", result.Skipped, result.SkipReason)
 
-	fmt.Println("--- event 3: anonymous visitor, no device token registered -> skipped, not an error ---")
+	fmt.Println("--- event 3: anonymous visitor, no device registered -> skipped, not an error ---")
 	result, err = svc.ProcessEvent(ctx, grnoti.Event{
 		EventID:     "evt-2",
 		AnonymousID: "anon-session-999",
@@ -189,17 +190,17 @@ func run() error {
 // change at each construction site — every constructor lives in this same
 // package:
 //
-//	TokenStore:        grnoti.NewMongoTokenStore(grnoti.MongoTokenStoreConfig{URI: ..., Database: ...})
-//	                    // or grnoti.NewPostgresTokenStore(grnoti.PostgresConfig{DSN: ...})
+//	DeviceStore:        grnoti.NewMongoDeviceStore(grnoti.MongoDeviceStoreConfig{URI: ..., Database: ...})
+//	                    // or grnoti.NewPostgresDeviceStore(grnoti.PostgresConfig{DSN: ...})
 //	PreferencesStore:   grnoti.NewPostgresPreferencesStore(grnoti.PostgresConfig{DSN: ...})
-//	IdempotencyStore:   grnoti.NewCacheIdempotencyStore(<any grcache.Cache, e.g. grcache/redis>)
+//	IdempotencyStore:   grnoti.NewCacheIdempotencyStore(<any grcache.Cache, e.g. grcache.NewRedisCache(...)>)
 //	DLQHandler:         grnoti.NewPostgresDLQHandler(grnoti.PostgresDLQHandlerConfig{...})
 //	                    // or grnoti.NewMongoDLQHandler(grnoti.MongoDLQHandlerConfig{...})
 //	Dispatcher:         grnoti.NewFCMDispatcher(grnoti.FCMDispatcherDeps{Client: <*messaging.Client>})
 //	RateLimiter:        grnoti.NewRedisRateLimiter(grnoti.RedisRateLimiterConfig{...}) — wire into
 //	                    FCMDispatcherDeps.RateLimiter, not ServiceDeps
 //
-// Wiring multiple Postgres stores (TokenStore, PreferencesStore,
+// Wiring multiple Postgres stores (DeviceStore, PreferencesStore,
 // ExperimentStore, DLQHandler) together in one backend? Build one
 // *pgxpool.Pool yourself and inject it via PostgresConfig.Pool into each
 // store instead of giving each one its own DSN — see docs/postgres.md
@@ -207,5 +208,6 @@ func run() error {
 // grnoti.SchemaSQL() through your own migration tool before constructing
 // any of them (grnoti never applies its own schema).
 //
-// See CLAUDE.md for the docker run commands each backend's own tests use,
-// and docs/architecture.md for why the package is structured this way.
+// See CLAUDE.md for the shared containers each backend's own tests use
+// (make docker-up), and docs/architecture.md for why the package is
+// structured this way.

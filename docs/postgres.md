@@ -1,6 +1,6 @@
 # Using grnoti's Postgres stores in a backend
 
-This is the pattern for wiring `TokenStore`, `PreferencesStore`,
+This is the pattern for wiring `DeviceStore`, `PreferencesStore`,
 `ExperimentStore`, and `DLQHandler` (the four `NewPostgres*` constructors)
 into a real backend service, where you want one connection pool shared
 across all of them rather than each store dialing its own. It's a
@@ -56,7 +56,7 @@ if err != nil {
 }
 defer pool.Close() // the backend owns this pool — see Close() semantics below
 
-tokenStore, err := grnoti.NewPostgresTokenStore(grnoti.PostgresConfig{Pool: pool, Logger: logger})
+deviceStore, err := grnoti.NewPostgresDeviceStore(grnoti.PostgresConfig{Pool: pool, Logger: logger})
 preferencesStore, err := grnoti.NewPostgresPreferencesStore(grnoti.PostgresConfig{Pool: pool, Logger: logger})
 experimentStore, err := grnoti.NewPostgresExperimentStore(grnoti.PostgresConfig{Pool: pool, Logger: logger})
 dlqHandler, err := grnoti.NewPostgresDLQHandler(grnoti.PostgresDLQHandlerConfig{
@@ -81,14 +81,14 @@ done.
 
 ## Applying the schema — required, and always your job
 
-None of `NewPostgresTokenStore`, `NewPostgresPreferencesStore`,
+None of `NewPostgresDeviceStore`, `NewPostgresPreferencesStore`,
 `NewPostgresExperimentStore`, or `NewPostgresDLQHandler` ever run `CREATE
 TABLE`/`CREATE INDEX` — grnoti has no migration tool of its own and
-doesn't try to be one. The four tables each one queries (`grnoti_tokens`,
+doesn't try to be one. The four tables each one queries (`grnoti_devices`,
 `grnoti_preferences`, `grnoti_experiments`, `grnoti_dlq` — one shared
 `internal/postgresdb/schema.sql`, not four separate schemas) must already
 exist before you construct any of them, or every real store call
-(`SaveToken`, `GetPreferences`, `ClaimRetryableEvents`, ...) fails with a
+(`SaveDevice`, `GetPreferences`, `ClaimRetryableEvents`, ...) fails with a
 plain Postgres "relation does not exist" error — construction itself
 still succeeds, since it only pings the pool.
 
@@ -110,7 +110,8 @@ give each store its own `DSN` or share one `Pool` across all four, per
 
 An earlier iteration of this package had every `New*Postgres*` constructor
 apply its schema automatically on every connect, with a
-`PostgresConfig.SkipSchemaEnsure` flag to opt individual stores out of it.
+`PostgresConfig.SkipSchemaEnsure` flag to opt individual stores out of it
+(both removed in v0.2.0).
 That works fine as long as the pool's connection role has `CREATE` on the
 target schema — but a common, deliberate production setup is the
 opposite: one Postgres role owns migrations (`CREATE`/`ALTER`/`DROP`),

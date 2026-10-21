@@ -169,6 +169,8 @@ func (p *kafkaAnalyticsPublisher) Close() error {
 	p.closeOnce.Do(func() {
 		p.closed.Store(true)
 		if cerr := p.producer.Close(); cerr != nil {
+			// Deliberately untested: needs a fake sarama.SyncProducer whose
+			// Close fails (docs/architecture.md §6).
 			err = fmt.Errorf("grnoti/kafka: close producer: %w", cerr)
 		}
 		p.logger.Info("grnoti/kafka: analytics publisher closed")

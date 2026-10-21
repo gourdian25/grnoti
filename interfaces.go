@@ -7,35 +7,36 @@ import (
 	"time"
 )
 
-// TokenStore manages device-token registration and lookup. Every backend
-// (mongo.go, postgres.go, memory.go) implements this identically so
+// DeviceStore manages device registration and lookup, keyed by FID. Every
+// backend (devicestore.mongo.go, devicestore.postgres.go, memory.go) implements this identically so
 // application code depends on the interface alone.
-type TokenStore interface {
-	// GetActiveTokens returns every active DeviceToken registered for
+type DeviceStore interface {
+	// GetActiveDevices returns every active Device registered for
 	// userID.
-	GetActiveTokens(ctx context.Context, userID string) ([]DeviceToken, error)
+	GetActiveDevices(ctx context.Context, userID string) ([]Device, error)
 
-	// GetActiveTokensBatch is the multi-user form of GetActiveTokens,
-	// returning a map keyed by userID. A userID with no active tokens is
+	// GetActiveDevicesBatch is the multi-user form of GetActiveDevices,
+	// returning a map keyed by userID. A userID with no active devices is
 	// simply absent from the result map, not an error.
-	GetActiveTokensBatch(ctx context.Context, userIDs []string) (map[string][]DeviceToken, error)
+	GetActiveDevicesBatch(ctx context.Context, userIDs []string) (map[string][]Device, error)
 
-	// GetActiveTokensByAnonymousID is GetActiveTokens for an anonymous
+	// GetActiveDevicesByAnonymousID is GetActiveDevices for an anonymous
 	// (pre-authentication) visitor.
-	GetActiveTokensByAnonymousID(ctx context.Context, anonymousID string) ([]DeviceToken, error)
+	GetActiveDevicesByAnonymousID(ctx context.Context, anonymousID string) ([]Device, error)
 
-	// MarkInvalid deactivates token (e.g. after FCM reports it as
-	// unregistered). Marking an already-inactive or nonexistent token is
-	// not an error.
-	MarkInvalid(ctx context.Context, token string) error
+	// MarkInvalid deactivates the device with this fid (e.g. after FCM
+	// reports it as unregistered). Marking an already-inactive or
+	// nonexistent fid is not an error.
+	MarkInvalid(ctx context.Context, fid string) error
 
-	// SaveToken upserts token: creates it if new, refreshes its metadata
-	// and reactivates it (IsActive=true) if it already exists.
-	SaveToken(ctx context.Context, token DeviceToken) error
+	// SaveDevice upserts device by FID: creates it if new, refreshes its
+	// metadata and reactivates it (IsActive=true) if it already exists.
+	// Returns ErrInvalidFID, storing nothing, when device.Validate fails.
+	SaveDevice(ctx context.Context, device Device) error
 
-	// DeleteToken permanently removes token. Deleting a nonexistent token
-	// is not an error.
-	DeleteToken(ctx context.Context, token string) error
+	// DeleteDevice permanently removes the device with this fid. Deleting a
+	// nonexistent fid is not an error.
+	DeleteDevice(ctx context.Context, fid string) error
 
 	// Close releases any underlying connections. Idempotent.
 	Close() error
@@ -251,15 +252,15 @@ type DLQHandler interface {
 
 // PushDispatcher sends rendered Messages to devices or topics via FCM.
 type PushDispatcher interface {
-	// Send delivers msg to every token in tokens, batching/fanning out by
-	// platform internally. A partial failure (some tokens succeed, others
+	// Send delivers msg to every device in devices, batching/fanning out by
+	// platform internally. A partial failure (some devices succeed, others
 	// don't) is reported via the returned DispatchResult, not a non-nil
 	// error — Send returns a non-nil error only when it could not attempt
 	// delivery at all (e.g. msg fails payload-size validation).
-	Send(ctx context.Context, tokens []DeviceToken, msg Message) (DispatchResult, error)
+	Send(ctx context.Context, devices []Device, msg Message) (DispatchResult, error)
 
-	// SendToToken sends msg to a single token, with no batching.
-	SendToToken(ctx context.Context, token DeviceToken, msg Message) error
+	// SendToDevice sends msg to a single device, with no batching.
+	SendToDevice(ctx context.Context, device Device, msg Message) error
 
 	// SendToTopic sends msg to every device subscribed to topic via FCM's
 	// own topic-messaging feature. FCM does not report per-recipient
@@ -290,7 +291,7 @@ type Metrics interface {
 	IncNotificationsProcessed()
 	IncNotificationsSent(eventType EventType, platform Platform, count int)
 	IncNotificationsFailed(eventType EventType, platform Platform, count int)
-	IncInvalidTokens(count int)
+	IncInvalidFIDs(count int)
 	IncEventsSkipped(reason string)
 	ObserveDispatchLatency(eventType EventType, platform Platform, duration time.Duration)
 	ObserveProcessingLatency(duration time.Duration)
@@ -382,11 +383,11 @@ type LocaleResolver interface {
 }
 
 // NotificationTarget is where a resolved Event should be sent — either a
-// fixed set of device tokens, or an FCM topic.
+// fixed set of devices, or an FCM topic.
 type NotificationTarget interface {
 	IsTopicBased() bool
 	GetTopicName() string
-	GetTokens() []DeviceToken
+	GetDevices() []Device
 }
 
 // TopicRouter resolves an Event to a NotificationTarget.
@@ -394,15 +395,15 @@ type TopicRouter interface {
 	ResolveTarget(ctx context.Context, event Event) (NotificationTarget, error)
 }
 
-// BatchSplitter deduplicates and chunks DeviceTokens for dispatch.
+// BatchSplitter deduplicates and chunks devices for dispatch.
 type BatchSplitter interface {
-	// Split partitions tokens into batches of at most maxBatchSize each.
-	// maxBatchSize<=0 or an empty tokens returns tokens as one batch.
-	Split(tokens []DeviceToken, maxBatchSize int) [][]DeviceToken
+	// Split partitions devices into batches of at most maxBatchSize each.
+	// maxBatchSize<=0 or an empty devices returns devices as one batch.
+	Split(devices []Device, maxBatchSize int) [][]Device
 
-	// Deduplicate removes tokens with a repeated Token value, keeping the
-	// first occurrence (order-preserving).
-	Deduplicate(tokens []DeviceToken) []DeviceToken
+	// Deduplicate removes devices with a repeated FID, keeping the first
+	// occurrence (order-preserving).
+	Deduplicate(devices []Device) []Device
 }
 
 // RetryStrategy decides whether and how long to wait before retrying a
@@ -429,7 +430,7 @@ type PayloadValidator interface {
 
 // NotificationService is the top-level orchestrator: validates an Event,
 // checks preferences and idempotency, renders it, resolves recipients,
-// dispatches, and records the outcome (metrics, invalid-token cleanup, DLQ
+// dispatches, and records the outcome (metrics, invalid-FID cleanup, DLQ
 // on exhausted failure).
 type NotificationService interface {
 	ProcessEvent(ctx context.Context, event Event) (ProcessingResult, error)

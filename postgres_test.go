@@ -138,7 +138,7 @@ func TestConnectPostgres_SharedPool(t *testing.T) {
 	// Spot-check the pool/queries connectPostgres returned are the live,
 	// usable ones (i.e. connectPostgres didn't dial a redundant pool of
 	// its own despite Pool being set).
-	if _, err := queries.GetActiveTokensByUserID(context.Background(), "no-such-user"); err != nil {
+	if _, err := queries.GetActiveDevicesByUserID(context.Background(), "no-such-user"); err != nil {
 		t.Errorf("query against shared pool after connectPostgres: %v", err)
 	}
 }

@@ -6,8 +6,8 @@ Security fixes are applied to the latest released minor version.
 
 | Version | Supported |
 |---------|-----------|
-| 0.1.x   | ✅        |
-| < 0.1   | ❌        |
+| 0.4.x   | ✅        |
+| < 0.4   | ❌        |
 
 ## Reporting a Vulnerability
 
@@ -27,14 +27,14 @@ advisory will be published together with a patched release.
 ## Scope Notes
 
 grnoti dispatches push notifications via Firebase Cloud Messaging and reads
-events from Kafka; it stores device tokens, user preferences, idempotency
+events from Kafka; it stores device registrations (FIDs), user preferences, idempotency
 markers, and dead-letter records in whichever Mongo/Postgres/Redis backends
 the caller configures. The most relevant security considerations for users:
 
-- **Device tokens are bearer credentials for delivery, not identity.**
-  grnoti does not verify that a `DeviceToken` actually belongs to the
-  `UserID`/`AnonymousID` it's associated with — that binding is the caller's
-  responsibility at token-registration time (`TokenStore.SaveToken`).
+- **An FID addresses delivery; it is not identity.** grnoti does not
+  verify that a `Device` actually belongs to the `UserID`/`AnonymousID`
+  it's associated with — that binding is the caller's responsibility at
+  registration time (`DeviceStore.SaveDevice`).
 - **No encryption at rest or in transit is provided by grnoti itself.** TLS
   to Mongo/Postgres/Redis/Kafka and encryption of any sensitive
   `Event.Payload`/`Message.Data` values before they reach grnoti are the

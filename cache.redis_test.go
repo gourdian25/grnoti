@@ -12,11 +12,11 @@ import (
 )
 
 // newTestRedisCache is cache_test.go's newTestCache, but against real local
-// Redis instead of grcache/memory — closing out Stage 4's deferred "extend
+// Redis instead of grcache's in-memory backend — closing out Stage 4's deferred "extend
 // grcache/redis integration coverage once Stage 8's Redis setup exists"
 // item (docs/plan/grnoti-plan.md §8 Stage 4/Stage 8). The cache-backed
 // adapters (cache.idempotency.go, cache.preferences.go, cache.experiment.go)
-// are otherwise only ever exercised against grcache/memory in this repo's
+// are otherwise only ever exercised against grcache.NewMemoryCache in this repo's
 // test suite, which proves the adapter logic but not that it actually works
 // against the backend it's meant to run against in production.
 func newTestRedisCache(t *testing.T) grcache.Cache {

@@ -287,7 +287,7 @@ func TestPostgresDLQHandler_Close_Idempotent(t *testing.T) {
 
 // TestPostgresDLQHandler_GenericQueryError uses an already-canceled
 // context to force a real query-level error — see the analogous
-// tokenstore.postgres_test.go comment for why this reaches a branch fault
+// devicestore.postgres_test.go comment for why this reaches a branch fault
 // injection would otherwise require.
 func TestPostgresDLQHandler_GenericQueryError(t *testing.T) {
 	h := newTestPostgresDLQHandler(t, 3, 0)

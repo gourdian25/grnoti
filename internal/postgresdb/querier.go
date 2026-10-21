@@ -22,18 +22,18 @@ type Querier interface {
 	ClaimRetryableEvents(ctx context.Context, arg ClaimRetryableEventsParams) ([]GrnotiDlq, error)
 	// File: internal/postgresdb/queries/experiments.sql
 	CreateExperiment(ctx context.Context, arg CreateExperimentParams) error
+	DeleteDevice(ctx context.Context, fid string) (int64, error)
 	DeleteExperiment(ctx context.Context, id string) error
-	DeleteToken(ctx context.Context, token string) (int64, error)
 	// Step 2 of MarkRetried when the event goes back to pending (a retryable
 	// failure, retries not yet exhausted).
 	FinalizeRetryPending(ctx context.Context, arg FinalizeRetryPendingParams) error
 	// Step 2 of MarkRetried when the event reaches a terminal state (resolved
 	// on success, exhausted after MaxRetries).
 	FinalizeRetryTerminal(ctx context.Context, arg FinalizeRetryTerminalParams) error
-	GetActiveTokensByAnonymousID(ctx context.Context, anonymousID string) ([]GrnotiToken, error)
-	// File: internal/postgresdb/queries/tokens.sql
-	GetActiveTokensByUserID(ctx context.Context, userID string) ([]GrnotiToken, error)
-	GetActiveTokensByUserIDs(ctx context.Context, userIds []string) ([]GrnotiToken, error)
+	GetActiveDevicesByAnonymousID(ctx context.Context, anonymousID string) ([]GrnotiDevice, error)
+	// File: internal/postgresdb/queries/devices.sql
+	GetActiveDevicesByUserID(ctx context.Context, userID string) ([]GrnotiDevice, error)
+	GetActiveDevicesByUserIDs(ctx context.Context, userIds []string) ([]GrnotiDevice, error)
 	GetDLQEventByID(ctx context.Context, eventID string) (GrnotiDlq, error)
 	GetExperiment(ctx context.Context, id string) (GrnotiExperiment, error)
 	// File: internal/postgresdb/queries/preferences.sql
@@ -45,7 +45,7 @@ type Querier interface {
 	// distinguishes those two cases via a follow-up GetDLQEventByID.
 	IncrementRetryCount(ctx context.Context, arg IncrementRetryCountParams) (GrnotiDlq, error)
 	ListExperiments(ctx context.Context) ([]GrnotiExperiment, error)
-	MarkTokenInvalid(ctx context.Context, arg MarkTokenInvalidParams) (int64, error)
+	MarkDeviceInvalid(ctx context.Context, arg MarkDeviceInvalidParams) (int64, error)
 	PurgeExpiredEvents(ctx context.Context, createdAt pgtype.Timestamptz) (int64, error)
 	UpdateExperiment(ctx context.Context, arg UpdateExperimentParams) (int64, error)
 	// File: internal/postgresdb/queries/dlq.sql
@@ -56,8 +56,8 @@ type Querier interface {
 	// reference implementation had two separate, uncoordinated writers for
 	// these two cases).
 	UpsertDLQEvent(ctx context.Context, arg UpsertDLQEventParams) error
+	UpsertDevice(ctx context.Context, arg UpsertDeviceParams) error
 	UpsertPreferences(ctx context.Context, arg UpsertPreferencesParams) error
-	UpsertToken(ctx context.Context, arg UpsertTokenParams) error
 }
 
 var _ Querier = (*Queries)(nil)

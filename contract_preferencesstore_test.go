@@ -9,7 +9,7 @@ import (
 
 // testPreferencesStoreContract is the shared behavioral contract every
 // PreferencesStore backend must satisfy identically. See
-// testTokenStoreContract's doc comment for why newStore takes the
+// testDeviceStoreContract's doc comment for why newStore takes the
 // currently-executing *testing.T.
 func testPreferencesStoreContract(t *testing.T, newStore func(t *testing.T) PreferencesStore) {
 	t.Helper()

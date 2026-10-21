@@ -18,30 +18,30 @@ import (
 
 type stubDispatcher struct {
 	mu               sync.Mutex
-	sendCalls        [][]DeviceToken
+	sendCalls        [][]Device
 	sendToTopicCalls []string
 
-	SendFunc        func(ctx context.Context, tokens []DeviceToken, msg Message) (DispatchResult, error)
-	SendToTokenFunc func(ctx context.Context, token DeviceToken, msg Message) error
-	SendToTopicFunc func(ctx context.Context, topic string, msg Message) error
+	SendFunc         func(ctx context.Context, devices []Device, msg Message) (DispatchResult, error)
+	SendToDeviceFunc func(ctx context.Context, device Device, msg Message) error
+	SendToTopicFunc  func(ctx context.Context, topic string, msg Message) error
 }
 
-func (d *stubDispatcher) Send(ctx context.Context, tokens []DeviceToken, msg Message) (DispatchResult, error) {
+func (d *stubDispatcher) Send(ctx context.Context, devices []Device, msg Message) (DispatchResult, error) {
 	d.mu.Lock()
-	d.sendCalls = append(d.sendCalls, tokens)
+	d.sendCalls = append(d.sendCalls, devices)
 	d.mu.Unlock()
 	if d.SendFunc != nil {
-		return d.SendFunc(ctx, tokens, msg)
+		return d.SendFunc(ctx, devices, msg)
 	}
 	return DispatchResult{
-		SuccessCount:      len(tokens),
-		SuccessByPlatform: map[Platform]int{PlatformAndroid: len(tokens)},
+		SuccessCount:      len(devices),
+		SuccessByPlatform: map[Platform]int{PlatformAndroid: len(devices)},
 	}, nil
 }
 
-func (d *stubDispatcher) SendToToken(ctx context.Context, token DeviceToken, msg Message) error {
-	if d.SendToTokenFunc != nil {
-		return d.SendToTokenFunc(ctx, token, msg)
+func (d *stubDispatcher) SendToDevice(ctx context.Context, device Device, msg Message) error {
+	if d.SendToDeviceFunc != nil {
+		return d.SendToDeviceFunc(ctx, device, msg)
 	}
 	return nil
 }
@@ -66,7 +66,7 @@ type stubMetricsFull struct {
 	mu                  sync.Mutex
 	processed           int
 	sent, failed        int
-	invalidTokens       int
+	invalidFIDs         int
 	skipped             []string
 	dispatchLatencies   int
 	processingLatencies int
@@ -87,10 +87,10 @@ func (m *stubMetricsFull) IncNotificationsFailed(EventType, Platform, int) {
 	defer m.mu.Unlock()
 	m.failed++
 }
-func (m *stubMetricsFull) IncInvalidTokens(int) {
+func (m *stubMetricsFull) IncInvalidFIDs(int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.invalidTokens++
+	m.invalidFIDs++
 }
 func (m *stubMetricsFull) IncEventsSkipped(reason string) {
 	m.mu.Lock()
@@ -133,7 +133,7 @@ func newTestIdempotencyStore(t *testing.T) IdempotencyStore {
 func baseServiceDeps(t *testing.T) ServiceDeps {
 	t.Helper()
 	return ServiceDeps{
-		TokenStore:  NewMemoryTokenStore(),
+		DeviceStore: NewMemoryDeviceStore(),
 		Dispatcher:  &stubDispatcher{},
 		Templates:   NewTemplateEngine(),
 		Idempotency: newTestIdempotencyStore(t),
@@ -154,10 +154,10 @@ func TestNewNotificationService_RequiredDeps(t *testing.T) {
 		name string
 		deps ServiceDeps
 	}{
-		{"missing TokenStore", ServiceDeps{Dispatcher: full.Dispatcher, Templates: full.Templates, Idempotency: full.Idempotency}},
-		{"missing Dispatcher", ServiceDeps{TokenStore: full.TokenStore, Templates: full.Templates, Idempotency: full.Idempotency}},
-		{"missing Templates", ServiceDeps{TokenStore: full.TokenStore, Dispatcher: full.Dispatcher, Idempotency: full.Idempotency}},
-		{"missing Idempotency", ServiceDeps{TokenStore: full.TokenStore, Dispatcher: full.Dispatcher, Templates: full.Templates}},
+		{"missing DeviceStore", ServiceDeps{Dispatcher: full.Dispatcher, Templates: full.Templates, Idempotency: full.Idempotency}},
+		{"missing Dispatcher", ServiceDeps{DeviceStore: full.DeviceStore, Templates: full.Templates, Idempotency: full.Idempotency}},
+		{"missing Templates", ServiceDeps{DeviceStore: full.DeviceStore, Dispatcher: full.Dispatcher, Idempotency: full.Idempotency}},
+		{"missing Idempotency", ServiceDeps{DeviceStore: full.DeviceStore, Dispatcher: full.Dispatcher, Templates: full.Templates}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -180,7 +180,7 @@ func TestNewNotificationService_MinimalDepsSucceed(t *testing.T) {
 
 func TestProcessEvent_HappyPath(t *testing.T) {
 	deps := baseServiceDeps(t)
-	_ = deps.TokenStore.SaveToken(context.Background(), DeviceToken{Token: "t1", UserID: "u1", Platform: PlatformAndroid})
+	_ = deps.DeviceStore.SaveDevice(context.Background(), Device{FID: testFID("t1"), UserID: "u1", Platform: PlatformAndroid})
 	svc, err := NewNotificationService(deps)
 	if err != nil {
 		t.Fatalf("NewNotificationService: %v", err)
@@ -194,8 +194,8 @@ func TestProcessEvent_HappyPath(t *testing.T) {
 	if result.Skipped {
 		t.Fatalf("ProcessEvent() = %+v, want not skipped", result)
 	}
-	if result.TokenCount != 1 || result.DispatchResult.SuccessCount != 1 {
-		t.Fatalf("ProcessEvent() = %+v, want TokenCount=1 SuccessCount=1", result)
+	if result.DeviceCount != 1 || result.DispatchResult.SuccessCount != 1 {
+		t.Fatalf("ProcessEvent() = %+v, want DeviceCount=1 SuccessCount=1", result)
 	}
 
 	processed, err := deps.Idempotency.IsProcessed(context.Background(), "e1")
@@ -290,7 +290,7 @@ func TestProcessEvent_PreferencesBlocks(t *testing.T) {
 
 func TestProcessEvent_PreferencesFailsOpen(t *testing.T) {
 	deps := baseServiceDeps(t)
-	_ = deps.TokenStore.SaveToken(context.Background(), DeviceToken{Token: "t1", UserID: "u1"})
+	_ = deps.DeviceStore.SaveDevice(context.Background(), Device{FID: testFID("t1"), UserID: "u1"})
 	deps.PreferencesFilter = &stubPreferencesFilter{err: errors.New("preferences store unreachable")}
 	deps.Config.EnablePreferencesFilter = true
 	svc, _ := NewNotificationService(deps)
@@ -305,9 +305,9 @@ func TestProcessEvent_PreferencesFailsOpen(t *testing.T) {
 	}
 }
 
-// --- no tokens ---
+// --- no devices ---
 
-func TestProcessEvent_NoActiveTokens(t *testing.T) {
+func TestProcessEvent_NoActiveDevices(t *testing.T) {
 	deps := baseServiceDeps(t)
 	svc, _ := NewNotificationService(deps)
 	defer svc.Close()
@@ -317,28 +317,28 @@ func TestProcessEvent_NoActiveTokens(t *testing.T) {
 		t.Fatalf("ProcessEvent: %v", err)
 	}
 	if !result.Skipped {
-		t.Fatalf("ProcessEvent(no tokens) = %+v, want Skipped", result)
+		t.Fatalf("ProcessEvent(no devices) = %+v, want Skipped", result)
 	}
 	processed, _ := deps.Idempotency.IsProcessed(context.Background(), "e1")
 	if !processed {
-		t.Fatal("event not marked processed after no-tokens skip — reprocessing would repeat the no-op forever")
+		t.Fatal("event not marked processed after no-devices skip — reprocessing would repeat the no-op forever")
 	}
 }
 
-// --- direct tokens ---
+// --- direct FIDs ---
 
-func TestProcessEvent_DirectTokens_BypassesTokenStore(t *testing.T) {
+func TestProcessEvent_DirectFIDs_BypassesDeviceStore(t *testing.T) {
 	deps := baseServiceDeps(t)
 	svc, _ := NewNotificationService(deps)
 	defer svc.Close()
 
-	event := Event{EventID: "e1", Type: EventTypeSystemAlert, Priority: PriorityNormal, DeviceTokens: []string{"direct-1", "direct-2"}}
+	event := Event{EventID: "e1", Type: EventTypeSystemAlert, Priority: PriorityNormal, FIDs: []string{testFID("direct-1"), testFID("direct-2")}}
 	result, err := svc.ProcessEvent(context.Background(), event)
 	if err != nil {
 		t.Fatalf("ProcessEvent: %v", err)
 	}
-	if result.TokenCount != 2 || result.DispatchResult.SuccessCount != 2 {
-		t.Fatalf("ProcessEvent(direct tokens) = %+v, want TokenCount=2 SuccessCount=2", result)
+	if result.DeviceCount != 2 || result.DispatchResult.SuccessCount != 2 {
+		t.Fatalf("ProcessEvent(direct FIDs) = %+v, want DeviceCount=2 SuccessCount=2", result)
 	}
 }
 
@@ -346,7 +346,7 @@ func TestProcessEvent_DirectTokens_BypassesTokenStore(t *testing.T) {
 
 func TestProcessEvent_AnonymousEvent(t *testing.T) {
 	deps := baseServiceDeps(t)
-	_ = deps.TokenStore.SaveToken(context.Background(), DeviceToken{Token: "t1", AnonymousID: "a1"})
+	_ = deps.DeviceStore.SaveDevice(context.Background(), Device{FID: testFID("t1"), AnonymousID: "a1"})
 	svc, _ := NewNotificationService(deps)
 	defer svc.Close()
 
@@ -355,14 +355,14 @@ func TestProcessEvent_AnonymousEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessEvent: %v", err)
 	}
-	if result.TokenCount != 1 {
-		t.Fatalf("ProcessEvent(anonymous) TokenCount = %d, want 1", result.TokenCount)
+	if result.DeviceCount != 1 {
+		t.Fatalf("ProcessEvent(anonymous) DeviceCount = %d, want 1", result.DeviceCount)
 	}
 }
 
 // --- topic routing ---
 
-func TestProcessEvent_TopicRouting_SendsToTopicNotTokens(t *testing.T) {
+func TestProcessEvent_TopicRouting_SendsToTopicNotDevices(t *testing.T) {
 	deps := baseServiceDeps(t)
 	deps.TopicRouter = NewStaticTopicRouter("broadcast-topic")
 	deps.Config.EnableTopicRouting = true
@@ -421,12 +421,12 @@ func TestProcessEvent_TopicRouter_ResolveTargetError(t *testing.T) {
 	}
 }
 
-func TestMarkInvalidTokens_LogsAndContinuesOnError(t *testing.T) {
+func TestMarkInvalidFIDs_LogsAndContinuesOnError(t *testing.T) {
 	deps := baseServiceDeps(t)
-	tokenStore := &stubTokenStore{markInvalidErr: errors.New("mark invalid boom")}
-	deps.TokenStore = tokenStore
-	deps.Dispatcher = &stubDispatcher{SendFunc: func(context.Context, []DeviceToken, Message) (DispatchResult, error) {
-		return DispatchResult{FailureCount: 1, InvalidTokens: []string{"bad-token"}}, nil
+	deviceStore := &stubDeviceStore{markInvalidErr: errors.New("mark invalid boom")}
+	deps.DeviceStore = deviceStore
+	deps.Dispatcher = &stubDispatcher{SendFunc: func(context.Context, []Device, Message) (DispatchResult, error) {
+		return DispatchResult{FailureCount: 1, InvalidFIDs: []string{testFID("bad-fid")}}, nil
 	}}
 	svc, err := NewNotificationService(deps)
 	if err != nil {
@@ -435,7 +435,7 @@ func TestMarkInvalidTokens_LogsAndContinuesOnError(t *testing.T) {
 	defer svc.Close()
 
 	event := validEvent("e1")
-	event.DeviceTokens = []string{"bad-token"}
+	event.FIDs = []string{testFID("bad-fid")}
 	// MarkInvalid's error must be logged and swallowed, not propagated —
 	// ProcessEvent should still complete successfully.
 	if _, err := svc.ProcessEvent(context.Background(), event); err != nil {
@@ -453,8 +453,8 @@ func (errorDLQHandler) PublishToDLQ(context.Context, Event, string) error {
 
 func TestProcessEvent_PublishToDLQError_LogsAndContinues(t *testing.T) {
 	deps := baseServiceDeps(t)
-	_ = deps.TokenStore.SaveToken(context.Background(), DeviceToken{Token: "t1", UserID: "u1"})
-	deps.Dispatcher = &stubDispatcher{SendFunc: func(context.Context, []DeviceToken, Message) (DispatchResult, error) {
+	_ = deps.DeviceStore.SaveDevice(context.Background(), Device{FID: testFID("t1"), UserID: "u1"})
+	deps.Dispatcher = &stubDispatcher{SendFunc: func(context.Context, []Device, Message) (DispatchResult, error) {
 		return DispatchResult{FailureCount: 1, Errors: []error{errors.New("fcm unavailable")}}, nil
 	}}
 	deps.DLQHandler = errorDLQHandler{}
@@ -489,8 +489,8 @@ func TestJoinDispatchErrors(t *testing.T) {
 
 func TestProcessEvent_UnresolvedFailure_PublishesToDLQ(t *testing.T) {
 	deps := baseServiceDeps(t)
-	_ = deps.TokenStore.SaveToken(context.Background(), DeviceToken{Token: "t1", UserID: "u1"})
-	dispatcher := &stubDispatcher{SendFunc: func(context.Context, []DeviceToken, Message) (DispatchResult, error) {
+	_ = deps.DeviceStore.SaveDevice(context.Background(), Device{FID: testFID("t1"), UserID: "u1"})
+	dispatcher := &stubDispatcher{SendFunc: func(context.Context, []Device, Message) (DispatchResult, error) {
 		return DispatchResult{FailureCount: 1, Errors: []error{errors.New("fcm unavailable")}}, nil
 	}}
 	deps.Dispatcher = dispatcher
@@ -513,11 +513,11 @@ func TestProcessEvent_UnresolvedFailure_PublishesToDLQ(t *testing.T) {
 	}
 }
 
-func TestProcessEvent_InvalidTokenOnly_DoesNotPublishToDLQ(t *testing.T) {
+func TestProcessEvent_InvalidFIDOnly_DoesNotPublishToDLQ(t *testing.T) {
 	deps := baseServiceDeps(t)
-	_ = deps.TokenStore.SaveToken(context.Background(), DeviceToken{Token: "bad-token", UserID: "u1"})
-	dispatcher := &stubDispatcher{SendFunc: func(_ context.Context, tokens []DeviceToken, _ Message) (DispatchResult, error) {
-		return DispatchResult{FailureCount: 1, InvalidTokens: []string{"bad-token"}}, nil
+	_ = deps.DeviceStore.SaveDevice(context.Background(), Device{FID: testFID("bad-fid"), UserID: "u1"})
+	dispatcher := &stubDispatcher{SendFunc: func(_ context.Context, devices []Device, _ Message) (DispatchResult, error) {
+		return DispatchResult{FailureCount: 1, InvalidFIDs: []string{testFID("bad-fid")}}, nil
 	}}
 	deps.Dispatcher = dispatcher
 	dlq := NewMemoryDLQHandler(3, 0, time.Second)
@@ -531,22 +531,22 @@ func TestProcessEvent_InvalidTokenOnly_DoesNotPublishToDLQ(t *testing.T) {
 	}
 
 	if _, err := dlq.GetEventByID(context.Background(), "e1"); err != ErrDLQEventNotFound {
-		t.Fatalf("GetEventByID error = %v, want ErrDLQEventNotFound (an all-invalid-token failure shouldn't reach the DLQ)", err)
+		t.Fatalf("GetEventByID error = %v, want ErrDLQEventNotFound (an all-invalid-FID failure shouldn't reach the DLQ)", err)
 	}
 
-	tokens, err := deps.TokenStore.GetActiveTokens(context.Background(), "u1")
+	devices, err := deps.DeviceStore.GetActiveDevices(context.Background(), "u1")
 	if err != nil {
-		t.Fatalf("GetActiveTokens: %v", err)
+		t.Fatalf("GetActiveDevices: %v", err)
 	}
-	if len(tokens) != 0 {
-		t.Fatalf("GetActiveTokens after invalid-token dispatch = %v, want empty (token marked invalid)", tokens)
+	if len(devices) != 0 {
+		t.Fatalf("GetActiveDevices after invalid-FID dispatch = %v, want empty (FID marked invalid)", devices)
 	}
 }
 
 func TestProcessEvent_DLQDisabled_NoPublish(t *testing.T) {
 	deps := baseServiceDeps(t)
-	_ = deps.TokenStore.SaveToken(context.Background(), DeviceToken{Token: "t1", UserID: "u1"})
-	deps.Dispatcher = &stubDispatcher{SendFunc: func(context.Context, []DeviceToken, Message) (DispatchResult, error) {
+	_ = deps.DeviceStore.SaveDevice(context.Background(), Device{FID: testFID("t1"), UserID: "u1"})
+	deps.Dispatcher = &stubDispatcher{SendFunc: func(context.Context, []Device, Message) (DispatchResult, error) {
 		return DispatchResult{FailureCount: 1, Errors: []error{errors.New("boom")}}, nil
 	}}
 	dlq := NewMemoryDLQHandler(3, 0, time.Second)
@@ -567,7 +567,7 @@ func TestProcessEvent_DLQDisabled_NoPublish(t *testing.T) {
 
 func TestProcessEvent_EventBus_PublishesSentOnSuccess(t *testing.T) {
 	deps := baseServiceDeps(t)
-	_ = deps.TokenStore.SaveToken(context.Background(), DeviceToken{Token: "t1", UserID: "u1"})
+	_ = deps.DeviceStore.SaveDevice(context.Background(), Device{FID: testFID("t1"), UserID: "u1"})
 	bus := &stubBus{}
 	deps.EventBus = bus
 	deps.Config.EnableEventBus = true
@@ -586,8 +586,8 @@ func TestProcessEvent_EventBus_PublishesSentOnSuccess(t *testing.T) {
 
 func TestProcessEvent_EventBus_PublishesFailedOnTotalFailure(t *testing.T) {
 	deps := baseServiceDeps(t)
-	_ = deps.TokenStore.SaveToken(context.Background(), DeviceToken{Token: "t1", UserID: "u1"})
-	deps.Dispatcher = &stubDispatcher{SendFunc: func(context.Context, []DeviceToken, Message) (DispatchResult, error) {
+	_ = deps.DeviceStore.SaveDevice(context.Background(), Device{FID: testFID("t1"), UserID: "u1"})
+	deps.Dispatcher = &stubDispatcher{SendFunc: func(context.Context, []Device, Message) (DispatchResult, error) {
 		return DispatchResult{FailureCount: 1, Errors: []error{errors.New("boom")}}, nil
 	}}
 	bus := &stubBus{}
@@ -608,7 +608,7 @@ func TestProcessEvent_EventBus_PublishesFailedOnTotalFailure(t *testing.T) {
 
 func TestProcessEvent_EventBus_DisabledPublishesNothing(t *testing.T) {
 	deps := baseServiceDeps(t)
-	_ = deps.TokenStore.SaveToken(context.Background(), DeviceToken{Token: "t1", UserID: "u1"})
+	_ = deps.DeviceStore.SaveDevice(context.Background(), Device{FID: testFID("t1"), UserID: "u1"})
 	bus := &stubBus{}
 	deps.EventBus = bus
 	deps.Config.EnableEventBus = false
@@ -627,7 +627,7 @@ func TestProcessEvent_EventBus_DisabledPublishesNothing(t *testing.T) {
 
 func TestProcessEvent_Metrics(t *testing.T) {
 	deps := baseServiceDeps(t)
-	_ = deps.TokenStore.SaveToken(context.Background(), DeviceToken{Token: "t1", UserID: "u1"})
+	_ = deps.DeviceStore.SaveDevice(context.Background(), Device{FID: testFID("t1"), UserID: "u1"})
 	m := &stubMetricsFull{}
 	deps.Metrics = m
 	deps.Config.EnableMetrics = true
@@ -652,18 +652,18 @@ func TestProcessEvent_Metrics(t *testing.T) {
 	if m.processingLatencies != 1 {
 		t.Fatalf("ObserveProcessingLatency calls = %d, want 1", m.processingLatencies)
 	}
-	if m.invalidTokens != 0 {
-		t.Fatalf("IncInvalidTokens calls = %d, want 0 (service.go must not double-count what the dispatcher already reports)", m.invalidTokens)
+	if m.invalidFIDs != 0 {
+		t.Fatalf("IncInvalidFIDs calls = %d, want 0 (service.go must not double-count what the dispatcher already reports)", m.invalidFIDs)
 	}
 }
 
 func TestProcessEvent_Metrics_RecordsFailuresByPlatform(t *testing.T) {
 	deps := baseServiceDeps(t)
-	_ = deps.TokenStore.SaveToken(context.Background(), DeviceToken{Token: "t1", UserID: "u1"})
+	_ = deps.DeviceStore.SaveDevice(context.Background(), Device{FID: testFID("t1"), UserID: "u1"})
 	m := &stubMetricsFull{}
 	deps.Metrics = m
 	deps.Config.EnableMetrics = true
-	deps.Dispatcher = &stubDispatcher{SendFunc: func(context.Context, []DeviceToken, Message) (DispatchResult, error) {
+	deps.Dispatcher = &stubDispatcher{SendFunc: func(context.Context, []Device, Message) (DispatchResult, error) {
 		return DispatchResult{
 			FailureCount:      1,
 			FailureByPlatform: map[Platform]int{PlatformAndroid: 1},
@@ -692,13 +692,13 @@ func TestProcessEvent_Metrics_SkippedEventRecordsSkip(t *testing.T) {
 	svc, _ := NewNotificationService(deps)
 	defer svc.Close()
 
-	if _, err := svc.ProcessEvent(context.Background(), validEvent("e1")); err != nil { // no tokens saved -> skip
+	if _, err := svc.ProcessEvent(context.Background(), validEvent("e1")); err != nil { // no devices saved -> skip
 		t.Fatalf("ProcessEvent: %v", err)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if len(m.skipped) != 1 || m.skipped[0] != "no_active_tokens" {
-		t.Fatalf("IncEventsSkipped calls = %v, want [no_active_tokens]", m.skipped)
+	if len(m.skipped) != 1 || m.skipped[0] != "no_active_devices" {
+		t.Fatalf("IncEventsSkipped calls = %v, want [no_active_devices]", m.skipped)
 	}
 }
 
@@ -709,9 +709,9 @@ func TestProcessEvent_EnforceBatching_SplitsAcrossMultipleSendCalls(t *testing.T
 	dispatcher := &stubDispatcher{}
 	deps.Dispatcher = dispatcher
 	deps.Config.EnforceBatching = true
-	deps.Config.MaxTokensPerBatch = 2
+	deps.Config.MaxDevicesPerBatch = 2
 	for i := 0; i < 5; i++ {
-		_ = deps.TokenStore.SaveToken(context.Background(), DeviceToken{Token: fmt.Sprintf("t%d", i), UserID: "u1"})
+		_ = deps.DeviceStore.SaveDevice(context.Background(), Device{FID: testFID(fmt.Sprintf("t%d", i)), UserID: "u1"})
 	}
 	svc, _ := NewNotificationService(deps)
 	defer svc.Close()
@@ -724,13 +724,13 @@ func TestProcessEvent_EnforceBatching_SplitsAcrossMultipleSendCalls(t *testing.T
 		t.Fatalf("aggregated SuccessCount = %d, want 5", result.DispatchResult.SuccessCount)
 	}
 	if got := dispatcher.sendCallCount(); got != 3 { // 2+2+1
-		t.Fatalf("dispatcher.Send call count = %d, want 3 (5 tokens split at MaxTokensPerBatch=2)", got)
+		t.Fatalf("dispatcher.Send call count = %d, want 3 (5 devices split at MaxDevicesPerBatch=2)", got)
 	}
 }
 
 // TestProcessEvent_EnforceBatching_OneBatchErrorsStillAggregatesTheRest
-// exercises dispatchToTokens's lastErr branch: when EnforceBatching splits
-// a token list across several dispatcher.Send calls and only one of them
+// exercises dispatchToDevices's lastErr branch: when EnforceBatching splits
+// a device list across several dispatcher.Send calls and only one of them
 // returns a request-level error, the aggregated DispatchResult must still
 // include every other batch's real counts, and the returned error must be
 // that one batch's error (the last one encountered), not swallowed and not
@@ -739,18 +739,18 @@ func TestProcessEvent_EnforceBatching_OneBatchErrorsStillAggregatesTheRest(t *te
 	deps := baseServiceDeps(t)
 	batchErr := errors.New("batch 2 boom")
 	var calls atomic.Int32
-	dispatcher := &stubDispatcher{SendFunc: func(_ context.Context, tokens []DeviceToken, _ Message) (DispatchResult, error) {
+	dispatcher := &stubDispatcher{SendFunc: func(_ context.Context, devices []Device, _ Message) (DispatchResult, error) {
 		n := calls.Add(1)
 		if n == 2 {
-			return DispatchResult{FailureCount: len(tokens), Errors: []error{batchErr}}, batchErr
+			return DispatchResult{FailureCount: len(devices), Errors: []error{batchErr}}, batchErr
 		}
-		return DispatchResult{SuccessCount: len(tokens)}, nil
+		return DispatchResult{SuccessCount: len(devices)}, nil
 	}}
 	deps.Dispatcher = dispatcher
 	deps.Config.EnforceBatching = true
-	deps.Config.MaxTokensPerBatch = 2
+	deps.Config.MaxDevicesPerBatch = 2
 	for i := 0; i < 5; i++ {
-		_ = deps.TokenStore.SaveToken(context.Background(), DeviceToken{Token: fmt.Sprintf("t%d", i), UserID: "u1"})
+		_ = deps.DeviceStore.SaveDevice(context.Background(), Device{FID: testFID(fmt.Sprintf("t%d", i)), UserID: "u1"})
 	}
 	svc, _ := NewNotificationService(deps)
 	defer svc.Close()
@@ -759,7 +759,7 @@ func TestProcessEvent_EnforceBatching_OneBatchErrorsStillAggregatesTheRest(t *te
 	if err != nil {
 		t.Fatalf("ProcessEvent: %v", err)
 	}
-	// 5 tokens split into batches of 2 -> [2,2,1]; batch 2 (tokens 3-4)
+	// 5 devices split into batches of 2 -> [2,2,1]; batch 2 (devices 3-4)
 	// fails entirely, batches 1 and 3 succeed: 2 (batch1) + 1 (batch3) = 3
 	// successes, 2 failures (batch2).
 	if result.DispatchResult.SuccessCount != 3 {
@@ -777,9 +777,9 @@ func TestProcessEvent_WithoutEnforceBatching_SendsOnce(t *testing.T) {
 	deps := baseServiceDeps(t)
 	dispatcher := &stubDispatcher{}
 	deps.Dispatcher = dispatcher
-	deps.Config.MaxTokensPerBatch = 2 // set but EnforceBatching left false
+	deps.Config.MaxDevicesPerBatch = 2 // set but EnforceBatching left false
 	for i := 0; i < 5; i++ {
-		_ = deps.TokenStore.SaveToken(context.Background(), DeviceToken{Token: fmt.Sprintf("t%d", i), UserID: "u1"})
+		_ = deps.DeviceStore.SaveDevice(context.Background(), Device{FID: testFID(fmt.Sprintf("t%d", i)), UserID: "u1"})
 	}
 	svc, _ := NewNotificationService(deps)
 	defer svc.Close()
@@ -796,7 +796,7 @@ func TestProcessEvent_WithoutEnforceBatching_SendsOnce(t *testing.T) {
 
 func TestSubmit_WithoutBackpressure_BehavesLikeProcessEvent(t *testing.T) {
 	deps := baseServiceDeps(t)
-	_ = deps.TokenStore.SaveToken(context.Background(), DeviceToken{Token: "t1", UserID: "u1"})
+	_ = deps.DeviceStore.SaveDevice(context.Background(), Device{FID: testFID("t1"), UserID: "u1"})
 	svc, _ := NewNotificationService(deps)
 	defer svc.Close()
 
@@ -811,7 +811,7 @@ func TestSubmit_WithoutBackpressure_BehavesLikeProcessEvent(t *testing.T) {
 
 func TestSubmit_WithBackpressure_ProcessesAsyncViaWorkerPool(t *testing.T) {
 	deps := baseServiceDeps(t)
-	_ = deps.TokenStore.SaveToken(context.Background(), DeviceToken{Token: "t1", UserID: "u1"})
+	_ = deps.DeviceStore.SaveDevice(context.Background(), Device{FID: testFID("t1"), UserID: "u1"})
 	deps.Config.EnableBackpressure = true
 	deps.WorkerPoolConfig = WorkerPoolConfig{Workers: 2, QueueSize: 10}
 	svc, err := NewNotificationService(deps)
@@ -836,7 +836,7 @@ func TestSubmit_WithBackpressure_ProcessesAsyncViaWorkerPool(t *testing.T) {
 
 func TestProcessEvent_AlwaysSynchronousRegardlessOfBackpressure(t *testing.T) {
 	deps := baseServiceDeps(t)
-	_ = deps.TokenStore.SaveToken(context.Background(), DeviceToken{Token: "t1", UserID: "u1"})
+	_ = deps.DeviceStore.SaveDevice(context.Background(), Device{FID: testFID("t1"), UserID: "u1"})
 	deps.Config.EnableBackpressure = true
 	svc, _ := NewNotificationService(deps)
 	defer svc.Close()
@@ -845,7 +845,7 @@ func TestProcessEvent_AlwaysSynchronousRegardlessOfBackpressure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessEvent: %v", err)
 	}
-	// If this returned before the work was done, TokenCount/DispatchResult
+	// If this returned before the work was done, DeviceCount/DispatchResult
 	// would still be zero-valued — proving ProcessEvent bypasses the pool
 	// entirely and runs on the calling goroutine.
 	if result.DispatchResult.SuccessCount != 1 {

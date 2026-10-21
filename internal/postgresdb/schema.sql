@@ -4,7 +4,7 @@
 -- SchemaSQL() (postgres.go) for the consuming application to apply
 -- through its own project's migration tool (golang-migrate, Flyway, a
 -- plain SQL file in CI, ...) -- grnoti itself never applies this; none of
--- NewPostgresTokenStore/NewPostgresPreferencesStore/
+-- NewPostgresDeviceStore/NewPostgresPreferencesStore/
 -- NewPostgresExperimentStore/NewPostgresDLQHandler assume anything beyond
 -- "the tables already exist". CREATE TABLE IF NOT EXISTS is used so
 -- applying it more than once (e.g. re-running your own migration) is
@@ -15,8 +15,8 @@
 -- postgres.go, serialized by a Postgres advisory lock) so its test suite
 -- stays self-contained without a real migration tool.
 
-CREATE TABLE IF NOT EXISTS grnoti_tokens (
-    token        VARCHAR(512) PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS grnoti_devices (
+    fid          VARCHAR(512) PRIMARY KEY,
     platform     VARCHAR(16)  NOT NULL,
     user_id      VARCHAR(255) NOT NULL DEFAULT '',
     anonymous_id VARCHAR(255) NOT NULL DEFAULT '',
@@ -26,8 +26,8 @@ CREATE TABLE IF NOT EXISTS grnoti_tokens (
     created_at   TIMESTAMPTZ  NOT NULL,
     updated_at   TIMESTAMPTZ  NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_grnoti_tokens_user ON grnoti_tokens (user_id, is_active);
-CREATE INDEX IF NOT EXISTS idx_grnoti_tokens_anon ON grnoti_tokens (anonymous_id, is_active);
+CREATE INDEX IF NOT EXISTS idx_grnoti_devices_user ON grnoti_devices (user_id, is_active);
+CREATE INDEX IF NOT EXISTS idx_grnoti_devices_anon ON grnoti_devices (anonymous_id, is_active);
 
 CREATE TABLE IF NOT EXISTS grnoti_preferences (
     user_id             VARCHAR(255) PRIMARY KEY,
