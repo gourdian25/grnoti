@@ -4,8 +4,8 @@
 // ecosystem: FCM dispatch, idempotent event processing, device
 // management, durable dead-letter retry tracking, circuit breaking,
 // distributed rate limiting, deterministic A/B experiment assignment,
-// localization, and topic-based routing, behind a set of storage-agnostic
-// interfaces.
+// localization, topic-based routing, and validated Kafka event publishing
+// and consumption, behind a set of storage-agnostic interfaces.
 //
 // # Package shape
 //

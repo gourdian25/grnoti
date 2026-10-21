@@ -96,23 +96,42 @@ return allowed
 `)
 
 // RedisRateLimiterConfig configures a redisRateLimiter constructed by
-// NewRedisRateLimiter. Zero-valued connection fields fall back to the same
-// defaults as grcache.RedisConfig; RequestsPerSecond and BurstSize
-// have no sensible zero value and must be set explicitly.
+// NewRedisRateLimiter. Exactly one of Addr or Client must be set: with
+// Addr the limiter dials (and owns) its own client, and zero-valued
+// connection fields fall back to the same defaults as grcache.RedisConfig;
+// with Client it uses the caller's client as given and every connection
+// field is ignored. RequestsPerSecond and BurstSize have no sensible zero
+// value and must be set explicitly either way.
 type RedisRateLimiterConfig struct {
-	// Addr is the Redis server address, e.g. "localhost:6379". Required.
+	// Addr is the Redis server address, e.g. "localhost:6379". Exactly one
+	// of Addr or Client must be set.
 	Addr string
-	// Password authenticates with the server. Empty means no auth.
+	// Client, if set, is used as given instead of dialing a new client
+	// from Addr, so the limiter can share one connection pool with the
+	// rest of your application. NewRedisRateLimiter only Pings it. grnoti
+	// never closes a Client it did not create: Close leaves it open, and
+	// so does a failed Ping. Any redis.UniversalClient works, Cluster and
+	// Ring included, since tokenBucketScript touches a single key (unlike
+	// grcache's Redis backend, which needs one MULTI/EXEC across keys).
+	// Exactly one of Addr or Client must be set.
+	Client goredis.UniversalClient
+	// Password authenticates with the server. Empty means no auth. Ignored
+	// when Client is set.
 	Password string
-	// DB selects the Redis logical database.
+	// DB selects the Redis logical database. Ignored when Client is set.
 	DB int
-	// PoolSize is the maximum number of connections in the pool. Defaults to 100.
+	// PoolSize is the maximum number of connections in the pool. Defaults
+	// to 100. Ignored when Client is set — size the client's pool yourself
+	// before passing it in.
 	PoolSize int
-	// DialTimeout bounds how long connecting to Redis may take. Defaults to 5s.
+	// DialTimeout bounds how long connecting to Redis may take. Defaults to
+	// 5s. Ignored when Client is set.
 	DialTimeout time.Duration
-	// ReadTimeout bounds how long a read may take. Defaults to 3s.
+	// ReadTimeout bounds how long a read may take. Defaults to 3s. Ignored
+	// when Client is set.
 	ReadTimeout time.Duration
 	// WriteTimeout bounds how long a write may take. Defaults to 3s.
+	// Ignored when Client is set.
 	WriteTimeout time.Duration
 
 	// RequestsPerSecond is the bucket's steady-state refill rate, shared
@@ -148,8 +167,9 @@ func (cfg RedisRateLimiterConfig) withDefaults() RedisRateLimiterConfig {
 	return cfg
 }
 
-// redisRateLimiter is a distributed token bucket backed by a raw
-// *redis.Client — the RateLimiter this service should actually run with
+// redisRateLimiter is a distributed token bucket backed by a raw go-redis
+// client, its own or an injected one — the RateLimiter this service should
+// actually run with
 // under more than one replica, since localRateLimiter enforces its quota
 // per-process only (N replicas each independently enforcing the full rate).
 // See docs/plan/grnoti-plan.md §1.1.
@@ -158,9 +178,13 @@ func (cfg RedisRateLimiterConfig) withDefaults() RedisRateLimiterConfig {
 // calls made through other processes sharing the same Key are invisible to
 // it, since the authoritative token count lives in Redis, not locally.
 type redisRateLimiter struct {
-	client *goredis.Client
-	logger Logger
-	key    string
+	client goredis.UniversalClient
+	// ownsClient is true only when NewRedisRateLimiter dialed client
+	// itself from Addr; Close closes the client only then. A client
+	// injected through RedisRateLimiterConfig.Client belongs to the caller.
+	ownsClient bool
+	logger     Logger
+	key        string
 
 	mu             sync.RWMutex
 	requestsPerSec int
@@ -177,21 +201,26 @@ type redisRateLimiter struct {
 
 var _ RateLimiter = (*redisRateLimiter)(nil)
 
-// NewRedisRateLimiter builds its own *redis.Client from cfg and validates
-// connectivity with a Ping before returning, mirroring grcache.NewRedisCache's
-// constructor-time validation.
+// NewRedisRateLimiter validates connectivity with a Ping before returning,
+// mirroring grcache.NewRedisCache's constructor-time validation. With
+// cfg.Addr it builds its own *redis.Client, which Close later closes; with
+// cfg.Client it uses that client as given and never closes it — the same
+// ownership rule as PostgresConfig.Pool.
 //
 // Parameters:
-//   - cfg: RedisRateLimiterConfig — Addr, RequestsPerSecond, and BurstSize
-//     are required; other fields default (see field docs)
+//   - cfg: RedisRateLimiterConfig — exactly one of Addr or Client, plus
+//     RequestsPerSecond and BurstSize, are required; other fields default
+//     (see field docs)
 //
 // Returns:
 //   - RateLimiter: ready to use, shared across every process using the
-//     same cfg.Addr/cfg.Key pair
-//   - error: non-nil if a required field is invalid or the connection fails
+//     same Redis server and cfg.Key
+//   - error: non-nil if Addr and Client are both set or both empty, a
+//     required field is invalid, or the connection/Ping fails (wrapping
+//     ErrBackendUnavailable)
 func NewRedisRateLimiter(cfg RedisRateLimiterConfig) (RateLimiter, error) {
-	if cfg.Addr == "" {
-		return nil, fmt.Errorf("grnoti: RedisRateLimiterConfig.Addr is required")
+	if (cfg.Addr == "") == (cfg.Client == nil) {
+		return nil, fmt.Errorf("grnoti: exactly one of RedisRateLimiterConfig.Addr or RedisRateLimiterConfig.Client is required")
 	}
 	if cfg.RequestsPerSecond <= 0 {
 		return nil, fmt.Errorf("grnoti: RequestsPerSecond must be > 0")
@@ -202,27 +231,42 @@ func NewRedisRateLimiter(cfg RedisRateLimiterConfig) (RateLimiter, error) {
 	cfg = cfg.withDefaults()
 	logger := OrNop(cfg.Logger)
 
-	client := goredis.NewClient(&goredis.Options{
-		Addr:         cfg.Addr,
-		Password:     cfg.Password,
-		DB:           cfg.DB,
-		PoolSize:     cfg.PoolSize,
-		DialTimeout:  cfg.DialTimeout,
-		ReadTimeout:  cfg.ReadTimeout,
-		WriteTimeout: cfg.WriteTimeout,
-	})
+	client, ownsClient := cfg.Client, false
+	if client == nil {
+		client = goredis.NewClient(&goredis.Options{
+			Addr:         cfg.Addr,
+			Password:     cfg.Password,
+			DB:           cfg.DB,
+			PoolSize:     cfg.PoolSize,
+			DialTimeout:  cfg.DialTimeout,
+			ReadTimeout:  cfg.ReadTimeout,
+			WriteTimeout: cfg.WriteTimeout,
+		})
+		ownsClient = true
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), redisRateLimiterPingTimeout)
 	defer cancel()
 	if _, err := client.Ping(ctx).Result(); err != nil {
+		if !ownsClient {
+			// The injected client is the caller's: report the failure,
+			// never close it.
+			logger.Error("grnoti: redis rate limiter injected client ping failed", "error", err)
+			return nil, fmt.Errorf("grnoti: ping injected redis client: %w", ErrBackendUnavailable)
+		}
 		_ = client.Close()
 		logger.Error("grnoti: redis rate limiter connect failed", "addr", cfg.Addr, "error", err)
 		return nil, fmt.Errorf("grnoti: connect %s: %w", cfg.Addr, ErrBackendUnavailable)
 	}
 
-	logger.Info("grnoti: redis rate limiter connected", "addr", cfg.Addr, "key", cfg.Key)
+	if ownsClient {
+		logger.Info("grnoti: redis rate limiter connected", "addr", cfg.Addr, "key", cfg.Key)
+	} else {
+		logger.Info("grnoti: redis rate limiter using injected client", "key", cfg.Key)
+	}
 	r := &redisRateLimiter{
 		client:         client,
+		ownsClient:     ownsClient,
 		logger:         logger,
 		key:            cfg.Key,
 		requestsPerSec: cfg.RequestsPerSecond,
@@ -331,13 +375,17 @@ func (r *redisRateLimiter) UpdateLimit(requestsPerSecond, burstSize int) error {
 	return nil
 }
 
-// Close closes the underlying *redis.Client, guarded by sync.Once since
-// go-redis errors on a double Close.
+// Close closes the underlying client only if NewRedisRateLimiter created
+// it (from RedisRateLimiterConfig.Addr); a client injected through
+// RedisRateLimiterConfig.Client is left open for its owner to close.
+// Guarded by sync.Once since go-redis errors on a double Close.
 func (r *redisRateLimiter) Close() error {
 	var err error
 	r.closeOnce.Do(func() {
 		r.closed.Store(true)
-		err = r.client.Close()
+		if r.ownsClient {
+			err = r.client.Close()
+		}
 		r.logger.Info("grnoti: redis rate limiter closed")
 	})
 	return err

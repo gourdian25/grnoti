@@ -4,11 +4,14 @@ package grnoti
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	goredis "github.com/redis/go-redis/v9"
 )
 
 const (
@@ -107,6 +110,100 @@ func TestRedisRateLimiter_InvalidConfig(t *testing.T) {
 	}
 	if _, err := NewRedisRateLimiter(RedisRateLimiterConfig{RequestsPerSecond: 10, BurstSize: 10}); err == nil {
 		t.Fatal("NewRedisRateLimiter(no Addr) = nil error, want non-nil")
+	}
+}
+
+// newInjectedRedisClient builds a go-redis client the test owns, the way a
+// real caller owns one it passes as RedisRateLimiterConfig.Client: grnoti
+// must never close it, so the test closes it itself on cleanup.
+func newInjectedRedisClient(t *testing.T) *goredis.Client {
+	t.Helper()
+	client := goredis.NewClient(&goredis.Options{Addr: testRedisAddr, Password: testRedisPassword})
+	t.Cleanup(func() { _ = client.Close() })
+	if err := client.Ping(context.Background()).Err(); err != nil {
+		t.Skipf("Redis not available at %s, skipping: %v", testRedisAddr, err)
+	}
+	return client
+}
+
+func TestRedisRateLimiter_RequiresExactlyOneOfAddrOrClient(t *testing.T) {
+	// NewClient doesn't dial, and the check runs before any Ping, so this
+	// needs no live Redis.
+	client := goredis.NewClient(&goredis.Options{Addr: testRedisAddr})
+	defer func() { _ = client.Close() }()
+
+	if _, err := NewRedisRateLimiter(RedisRateLimiterConfig{Addr: testRedisAddr, Client: client, RequestsPerSecond: 10, BurstSize: 10}); err == nil {
+		t.Fatal("NewRedisRateLimiter(both Addr and Client) = nil error, want non-nil")
+	}
+	if _, err := NewRedisRateLimiter(RedisRateLimiterConfig{RequestsPerSecond: 10, BurstSize: 10}); err == nil {
+		t.Fatal("NewRedisRateLimiter(neither Addr nor Client) = nil error, want non-nil")
+	}
+}
+
+func TestRedisRateLimiter_InjectedClient(t *testing.T) {
+	ctx := context.Background()
+	client := newInjectedRedisClient(t)
+	key := fmt.Sprintf("test:ratelimit:%s:%d", t.Name(), time.Now().UnixNano())
+
+	limiter, err := NewRedisRateLimiter(RedisRateLimiterConfig{Client: client, RequestsPerSecond: 5, BurstSize: 5, Key: key})
+	if err != nil {
+		t.Fatalf("NewRedisRateLimiter(Client): %v", err)
+	}
+	rl := limiter.(*redisRateLimiter)
+	defer func() { _ = rl.Close() }()
+
+	if rl.ownsClient {
+		t.Error("ownsClient = true for an injected Client, want false")
+	}
+	if rl.client != client {
+		t.Error("the limiter uses a different client than the one injected")
+	}
+	if ok, err := rl.Allow(ctx); err != nil || !ok {
+		t.Fatalf("Allow = (%v, %v), want (true, nil)", ok, err)
+	}
+	// The bucket hash is readable through the injected client: the limiter
+	// ran its script through that client, not one of its own.
+	if n, err := client.Exists(ctx, key).Result(); err != nil || n != 1 {
+		t.Fatalf("bucket key through the injected client: Exists = (%d, %v), want (1, nil)", n, err)
+	}
+}
+
+func TestRedisRateLimiter_CloseLeavesInjectedClientOpen(t *testing.T) {
+	ctx := context.Background()
+	client := newInjectedRedisClient(t)
+
+	limiter, err := NewRedisRateLimiter(RedisRateLimiterConfig{
+		Client: client, RequestsPerSecond: 5, BurstSize: 5,
+		Key: fmt.Sprintf("test:ratelimit:%s:%d", t.Name(), time.Now().UnixNano()),
+	})
+	if err != nil {
+		t.Fatalf("NewRedisRateLimiter(Client): %v", err)
+	}
+	rl := limiter.(*redisRateLimiter)
+	if err := rl.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Fatalf("injected client Ping after limiter Close: %v, want it still open", err)
+	}
+	if _, err := rl.Allow(ctx); err != ErrClosed {
+		t.Fatalf("Allow after Close error = %v, want ErrClosed", err)
+	}
+}
+
+func TestRedisRateLimiter_InjectedClientPingFailureLeavesClientOpen(t *testing.T) {
+	client := goredis.NewClient(&goredis.Options{Addr: "localhost:1", DialTimeout: 200 * time.Millisecond})
+	defer func() { _ = client.Close() }()
+
+	_, err := NewRedisRateLimiter(RedisRateLimiterConfig{Client: client, RequestsPerSecond: 10, BurstSize: 10})
+	if !errors.Is(err, ErrBackendUnavailable) {
+		t.Fatalf("NewRedisRateLimiter(unreachable injected client) error = %v, want ErrBackendUnavailable", err)
+	}
+	// Still a dial error, not "client is closed": the failed Ping must not
+	// have closed a client grnoti doesn't own.
+	if err := client.Ping(context.Background()).Err(); err == nil || errors.Is(err, goredis.ErrClosed) {
+		t.Fatalf("injected client Ping after failed NewRedisRateLimiter = %v, want a dial error, not ErrClosed", err)
 	}
 }
 

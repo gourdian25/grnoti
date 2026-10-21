@@ -83,6 +83,19 @@ func TestPreferencesStore_Contract(t *testing.T) {
 	t.Run("Memory", func(t *testing.T) {
 		testPreferencesStoreContract(t, func(t *testing.T) PreferencesStore { return NewMemoryPreferencesStore() })
 	})
+	t.Run("Mongo", func(t *testing.T) {
+		testPreferencesStoreContract(t, func(t *testing.T) PreferencesStore {
+			collection := contractCollectionName(t)
+			store, err := NewMongoPreferencesStore(MongoPreferencesStoreConfig{
+				URI: testMongoURI, Database: "grnoti_test", CollectionName: collection,
+			})
+			if err != nil {
+				t.Skipf("MongoDB not available, skipping: %v", err)
+			}
+			cleanupContractCollection(t, "grnoti_test", collection)
+			return store
+		})
+	})
 	t.Run("Postgres", func(t *testing.T) {
 		testPreferencesStoreContract(t, func(t *testing.T) PreferencesStore {
 			ensureTestPostgresSchema(t)

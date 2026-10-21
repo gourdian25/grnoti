@@ -173,6 +173,274 @@ func readOneMessage(t *testing.T, topic string) []byte {
 	}
 }
 
+// readTopicMessages reads the first n messages of topic's only partition,
+// from the oldest offset — readOneMessage's counterpart for tests that need
+// keys, order, or more than one message.
+func readTopicMessages(t *testing.T, topic string, n int) []*sarama.ConsumerMessage {
+	t.Helper()
+	consumer, err := sarama.NewConsumer(testKafkaBrokers, nil)
+	if err != nil {
+		t.Fatalf("sarama.NewConsumer: %v", err)
+	}
+	defer consumer.Close()
+
+	partConsumer, err := consumer.ConsumePartition(topic, 0, sarama.OffsetOldest)
+	if err != nil {
+		t.Fatalf("ConsumePartition(%s): %v", topic, err)
+	}
+	defer partConsumer.Close()
+
+	out := make([]*sarama.ConsumerMessage, 0, n)
+	timeout := time.After(15 * time.Second)
+	for len(out) < n {
+		select {
+		case msg := <-partConsumer.Messages():
+			out = append(out, msg)
+		case <-timeout:
+			t.Fatalf("timed out after %d of %d messages on topic %s", len(out), n, topic)
+		}
+	}
+	return out
+}
+
+// validProducerEvent returns an Event that passes Validate.
+func validProducerEvent(id string) Event {
+	return Event{
+		EventID: id, UserID: "u1", Type: EventTypeSystemAlert, Priority: PriorityNormal,
+		Payload: map[string]string{"k": "v"}, Timestamp: time.Now().UTC().Truncate(time.Millisecond),
+	}
+}
+
+func newTestKafkaEventProducer(t *testing.T, producer sarama.SyncProducer, topic string) EventProducer {
+	t.Helper()
+	ep, err := NewKafkaEventProducer(KafkaProducerConfig{Producer: producer, Topic: topic})
+	if err != nil {
+		t.Fatalf("NewKafkaEventProducer: %v", err)
+	}
+	t.Cleanup(func() { _ = ep.Close() })
+	return ep
+}
+
+// assertFirstMessageIs proves that whatever an earlier, refused publish
+// would have sent never reached topic: publish a marker, then the topic's
+// very first message must be that marker.
+func assertFirstMessageIs(t *testing.T, ep EventProducer, topic, markerID string) {
+	t.Helper()
+	if err := ep.Publish(context.Background(), validProducerEvent(markerID)); err != nil {
+		t.Fatalf("Publish(marker): %v", err)
+	}
+	if got := string(readTopicMessages(t, topic, 1)[0].Key); got != markerID {
+		t.Fatalf("first message on the topic has key %q, want the marker %q (a refused publish sent something)", got, markerID)
+	}
+}
+
+func TestNewKafkaEventProducer_RequiresProducerAndTopic(t *testing.T) {
+	if _, err := NewKafkaEventProducer(KafkaProducerConfig{Topic: "t"}); err == nil {
+		t.Fatal("NewKafkaEventProducer(nil Producer) = nil error, want non-nil")
+	}
+	if _, err := NewKafkaEventProducer(KafkaProducerConfig{Producer: rawSaramaProducer(t)}); err == nil {
+		t.Fatal("NewKafkaEventProducer(empty Topic) = nil error, want non-nil")
+	}
+}
+
+func TestKafkaEventProducer_PublishRoundTripsThroughConsumer(t *testing.T) {
+	topic := testKafkaTopic(t)
+	ep := newTestKafkaEventProducer(t, rawSaramaProducer(t), topic)
+
+	consumer, err := NewKafkaEventConsumer(KafkaConsumerConfig{
+		Brokers: testKafkaBrokers, GroupID: "grnoti-test-group-" + topic, Topics: []string{topic},
+	})
+	if err != nil {
+		t.Skipf("Kafka not available, skipping: %v", err)
+	}
+	defer consumer.Close()
+
+	var mu sync.Mutex
+	var received []Event
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = consumer.Start(ctx, func(_ context.Context, e Event) error {
+			mu.Lock()
+			received = append(received, e)
+			mu.Unlock()
+			return nil
+		})
+	}()
+	if err := consumer.(*kafkaEventConsumer).WaitReady(context.Background()); err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+
+	sent := validProducerEvent("evt-roundtrip")
+	sent.ExperimentID = "exp-1"
+	if err := ep.Publish(context.Background(), sent); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	waitForCondition(t, 15*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(received) == 1
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	got := received[0]
+	if got.EventID != sent.EventID || got.UserID != sent.UserID || got.Type != sent.Type ||
+		got.Priority != sent.Priority || got.ExperimentID != sent.ExperimentID ||
+		got.Payload["k"] != "v" || !got.Timestamp.Equal(sent.Timestamp) {
+		t.Fatalf("consumer decoded %+v, want %+v", got, sent)
+	}
+}
+
+func TestKafkaEventProducer_PublishKeysByEventID(t *testing.T) {
+	topic := testKafkaTopic(t)
+	ep := newTestKafkaEventProducer(t, rawSaramaProducer(t), topic)
+
+	if err := ep.Publish(context.Background(), validProducerEvent("evt-key")); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if got := string(readTopicMessages(t, topic, 1)[0].Key); got != "evt-key" {
+		t.Fatalf("message key = %q, want the EventID %q", got, "evt-key")
+	}
+}
+
+func TestKafkaEventProducer_PublishBatch(t *testing.T) {
+	topic := testKafkaTopic(t)
+	ep := newTestKafkaEventProducer(t, rawSaramaProducer(t), topic)
+
+	ids := []string{"evt-b1", "evt-b2", "evt-b3"}
+	events := make([]Event, len(ids))
+	for i, id := range ids {
+		events[i] = validProducerEvent(id)
+	}
+	if err := ep.PublishBatch(context.Background(), events); err != nil {
+		t.Fatalf("PublishBatch: %v", err)
+	}
+
+	for i, msg := range readTopicMessages(t, topic, len(ids)) {
+		if string(msg.Key) != ids[i] {
+			t.Errorf("message %d key = %q, want %q", i, msg.Key, ids[i])
+		}
+		var decoded Event
+		if err := json.Unmarshal(msg.Value, &decoded); err != nil || decoded.EventID != ids[i] {
+			t.Errorf("message %d decodes to (%+v, %v), want EventID %q", i, decoded, err, ids[i])
+		}
+	}
+}
+
+func TestKafkaEventProducer_PublishRejectsInvalidEvent(t *testing.T) {
+	topic := testKafkaTopic(t)
+	ep := newTestKafkaEventProducer(t, rawSaramaProducer(t), topic)
+
+	invalid := validProducerEvent("")
+	if err := ep.Publish(context.Background(), invalid); !errors.Is(err, ErrInvalidEventID) {
+		t.Fatalf("Publish(no EventID) error = %v, want ErrInvalidEventID", err)
+	}
+	assertFirstMessageIs(t, ep, topic, "evt-marker")
+}
+
+func TestKafkaEventProducer_PublishBatchWithInvalidEventSendsNothing(t *testing.T) {
+	topic := testKafkaTopic(t)
+	ep := newTestKafkaEventProducer(t, rawSaramaProducer(t), topic)
+
+	noTarget := validProducerEvent("evt-no-target")
+	noTarget.UserID = ""
+	err := ep.PublishBatch(context.Background(), []Event{validProducerEvent("evt-ok"), noTarget})
+	if !errors.Is(err, ErrNoTargetSpecified) {
+		t.Fatalf("PublishBatch([valid, no target]) error = %v, want ErrNoTargetSpecified", err)
+	}
+	assertFirstMessageIs(t, ep, topic, "evt-marker")
+}
+
+func TestKafkaEventProducer_MarshalFailureSendsNothing(t *testing.T) {
+	topic := testKafkaTopic(t)
+	ep := newTestKafkaEventProducer(t, rawSaramaProducer(t), topic)
+	ctx := context.Background()
+
+	// Validate passes, but time.Time refuses to marshal a year past 9999.
+	unencodable := validProducerEvent("evt-year-10000")
+	unencodable.Timestamp = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	if err := ep.Publish(ctx, unencodable); err == nil {
+		t.Fatal("Publish(unencodable) = nil error, want non-nil")
+	}
+	if err := ep.PublishBatch(ctx, []Event{validProducerEvent("evt-ok"), unencodable}); err == nil {
+		t.Fatal("PublishBatch([valid, unencodable]) = nil error, want non-nil")
+	}
+	assertFirstMessageIs(t, ep, topic, "evt-marker")
+}
+
+func TestKafkaEventProducer_CanceledContext(t *testing.T) {
+	ep := newTestKafkaEventProducer(t, rawSaramaProducer(t), testKafkaTopic(t))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := ep.Publish(ctx, validProducerEvent("evt-1")); !errors.Is(err, context.Canceled) {
+		t.Errorf("Publish(canceled ctx) error = %v, want context.Canceled", err)
+	}
+	if err := ep.PublishBatch(ctx, []Event{validProducerEvent("evt-1")}); !errors.Is(err, context.Canceled) {
+		t.Errorf("PublishBatch(canceled ctx) error = %v, want context.Canceled", err)
+	}
+}
+
+func TestKafkaEventProducer_EmptyBatchIsNoop(t *testing.T) {
+	ep := newTestKafkaEventProducer(t, rawSaramaProducer(t), testKafkaTopic(t))
+	if err := ep.PublishBatch(context.Background(), nil); err != nil {
+		t.Fatalf("PublishBatch(nil) = %v, want nil", err)
+	}
+}
+
+// TestKafkaEventProducer_SendFailureIsBackendUnavailable makes a real
+// producer refuse every message client-side (MaxMessageBytes below any
+// encoded Event), so the send-failure branch is covered without a mock.
+func TestKafkaEventProducer_SendFailureIsBackendUnavailable(t *testing.T) {
+	topic := testKafkaTopic(t)
+	cfg := sarama.NewConfig()
+	cfg.Producer.Return.Successes = true
+	cfg.Producer.MaxMessageBytes = 16
+	producer, err := sarama.NewSyncProducer(testKafkaBrokers, cfg)
+	if err != nil {
+		t.Skipf("Kafka not available, skipping: %v", err)
+	}
+	defer func() { _ = producer.Close() }()
+	ep := newTestKafkaEventProducer(t, producer, topic)
+	ctx := context.Background()
+
+	if err := ep.Publish(ctx, validProducerEvent("evt-1")); !errors.Is(err, ErrBackendUnavailable) {
+		t.Errorf("Publish(refused by producer) error = %v, want ErrBackendUnavailable", err)
+	}
+	if err := ep.PublishBatch(ctx, []Event{validProducerEvent("evt-1")}); !errors.Is(err, ErrBackendUnavailable) {
+		t.Errorf("PublishBatch(refused by producer) error = %v, want ErrBackendUnavailable", err)
+	}
+}
+
+func TestKafkaEventProducer_CloseLeavesInjectedProducerOpen(t *testing.T) {
+	topic := testKafkaTopic(t)
+	producer := rawSaramaProducer(t)
+	ep, err := NewKafkaEventProducer(KafkaProducerConfig{Producer: producer, Topic: topic})
+	if err != nil {
+		t.Fatalf("NewKafkaEventProducer: %v", err)
+	}
+	ctx := context.Background()
+
+	if err := ep.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := ep.Close(); err != nil {
+		t.Fatalf("second Close: %v, want nil", err)
+	}
+	if err := ep.Publish(ctx, validProducerEvent("evt-1")); err != ErrClosed {
+		t.Errorf("Publish after Close error = %v, want ErrClosed", err)
+	}
+	if err := ep.PublishBatch(ctx, []Event{validProducerEvent("evt-1")}); err != ErrClosed {
+		t.Errorf("PublishBatch after Close error = %v, want ErrClosed", err)
+	}
+	// The injected producer is the caller's and must still work.
+	if _, _, err := producer.SendMessage(&sarama.ProducerMessage{Topic: topic, Value: sarama.StringEncoder("still-open")}); err != nil {
+		t.Fatalf("injected producer SendMessage after event producer Close: %v, want it still open", err)
+	}
+}
+
 // --- consumer.kafka.go ---
 
 func TestKafkaEventConsumer_PublishAndConsume(t *testing.T) {

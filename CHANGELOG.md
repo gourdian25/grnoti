@@ -2,6 +2,67 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.5.0] - 2026-10-22
+
+Additive: no existing call needs to change. A Kafka event producer
+(the counterpart of `NewKafkaEventConsumer`), a MongoDB
+`PreferencesStore`, and client injection for the Redis rate limiter. Every
+injected connection follows `PostgresConfig.Pool`'s rule: grnoti never
+closes a connection it didn't create.
+
+### Added
+
+- **`EventProducer`** (`interfaces.go`) with `Publish`, `PublishBatch` and
+  `Close`, and its Kafka implementation
+  **`NewKafkaEventProducer(KafkaProducerConfig{Producer, Topic, Logger})`**
+  (`producer.kafka.go`). `Producer` (a caller-owned `sarama.SyncProducer`)
+  and `Topic` are required.
+  - Every event is checked with `Event.Validate` before sending, and an
+    invalid one returns its sentinel unsent. `PublishBatch` validates and
+    encodes the whole batch first, so one invalid event sends nothing.
+  - Events are encoded with `encoding/json`, the format the consumer
+    decodes, and each message is keyed by `EventID`.
+  - `Close` never closes the injected producer.
+- **`NewMongoPreferencesStore(MongoPreferencesStoreConfig{URI, Database, CollectionName, Logger})`**
+  (`preferences.mongo.go`), built like `NewMongoDeviceStore`: its own
+  mongo-driver v2 client from `URI`, with a Ping at construction.
+  - `DefaultPreferencesCollection` (`grnoti_preferences`) holds one
+    document per user, with a unique index on `user_id`.
+  - Its semantics match the Postgres store: `ErrPreferencesNotFound` for
+    an unknown user, an upsert that keeps `CreatedAt` and replaces
+    `EventTypeSettings`, and an unconfigured user opted in. It passes the
+    shared `PreferencesStore` contract.
+  - `EventTypeSettings` is stored as a sorted array of
+    `{event_type, enabled}` pairs, so any `EventType` string, dotted or
+    `$`-prefixed included, is safe.
+- **`RedisRateLimiterConfig.Client redis.UniversalClient`**, an alternative
+  to `Addr`; exactly one of the two must be set.
+  - The injected client is only Pinged, and the connection fields are
+    ignored.
+  - `Close`, and a failed Ping, leave it open (`redisRateLimiter.ownsClient`).
+  - Any `UniversalClient` works, Cluster and Ring included, because the
+    token-bucket script touches a single key.
+
+### Changed
+
+- `github.com/gourdian25/grcache` v0.5.0 → v0.6.0 (additive release;
+  `go mod tidy` also dropped the now-unused indirect
+  `github.com/klauspost/cpuid/v2`).
+- `NewRedisRateLimiter`'s error for a config with neither `Addr` nor
+  `Client` now reads "exactly one of RedisRateLimiterConfig.Addr or
+  RedisRateLimiterConfig.Client is required" (was "RedisRateLimiterConfig.Addr
+  is required"). With `Addr` set, behaviour is unchanged.
+
+### Documentation
+
+- `docs/architecture.md`: the §2 backend matrix (Mongo `PreferencesStore`,
+  `EventProducer`), §3.1 (`EventProducer` as the upstream half of
+  ingestion), and §3.12 (the never-close rule now also covers the Redis
+  client and the Kafka producer).
+- README.md: a new "Publishing events, and sharing your connections"
+  section, plus new rows in the Public API overview.
+- `docs.go`, `CLAUDE.md`, and the `RateLimiter` doc in `interfaces.go`.
+
 ## [0.4.0] - 2026-10-20
 
 **Breaking.** grnoti now addresses FCM by Firebase Installation ID (FID)

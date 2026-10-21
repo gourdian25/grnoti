@@ -36,8 +36,9 @@ docs/architecture.md §2 — key ones to know before touching related code:
 `DeviceStore`, `PreferencesStore`, `DLQHandler`, `ExperimentStore` +
 `ExperimentEngine` (assignment is a pure deterministic function, split
 from the store — see §3.5), `IdempotencyStore`, `RateLimiter`,
-`PushDispatcher` (FCM only), `EventConsumer`/`AnalyticsPublisher` (Kafka
-only), `TemplateEngine`, `TopicRouter`, `CircuitBreaker`.
+`PushDispatcher` (FCM only), `EventConsumer`/`EventProducer`/
+`AnalyticsPublisher` (Kafka only), `TemplateEngine`, `TopicRouter`,
+`CircuitBreaker`.
 
 **Load-bearing design decisions** (each has a full writeup in
 docs/architecture.md §3 — read the relevant one before changing the file
@@ -62,6 +63,18 @@ it names):
   the shared-pool pattern for wiring multiple stores off one backend
   connection pool). `Close()` only closes a pool the store dialed itself
   — never one passed in via `Pool`. See [docs/postgres.md](docs/postgres.md).
+  The same rule covers every injected connection: `RedisRateLimiterConfig`
+  takes exactly one of `Addr` or `Client` (`ownsClient`), and
+  `KafkaProducerConfig.Producer` is always the caller's, so
+  `NewKafkaEventProducer`'s `Close` never closes it. An injected
+  connection is never closed by grnoti, not even after a failed Ping.
+- `EventProducer.PublishBatch` validates and encodes every event before
+  sending any: one invalid event sends nothing. Keep that all-or-nothing
+  check if you touch `producer.kafka.go`.
+- `NewMongoPreferencesStore` stores `EventTypeSettings` as an array of
+  `{event_type, enabled}` pairs, never a sub-document keyed by event type,
+  because `EventType` is any string and a dotted or `$` key would become a
+  BSON path or operator.
 - FCM is addressed by Firebase Installation ID only (§3.13): a `Device` is
   keyed by `FID`, and `dispatcher.fcm.go` sends with `Fid`/`Fids`. Don't
   reintroduce the SDK's deprecated `Token`/`Tokens` fields, or relax
