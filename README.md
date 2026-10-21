@@ -7,17 +7,16 @@
 Push-notification service library for the gourdian ecosystem
 (`github.com/gourdian25/grnoti`): FCM dispatch, idempotent event
 processing, device registration by Firebase Installation ID, durable
-dead-letter retry, circuit
-breaking, distributed rate limiting, deterministic A/B experiment
-assignment, localization, and topic-based routing, behind a set of
-storage-agnostic interfaces.
+dead-letter retry, circuit breaking, distributed rate limiting,
+deterministic A/B experiment assignment, localization, and topic-based
+routing, behind a set of storage-agnostic interfaces.
 
-Status: feature-complete per the 14-stage build plan
-([docs/plan/grnoti-plan.md](docs/plan/grnoti-plan.md)), pre-tagged-release.
-`golangci-lint run` reports 0 issues; test coverage is 95.8% on the root
-package, enforced by a 95% gate (`make coverage-check`), verified against
-real local MongoDB/PostgreSQL/Redis/Kafka instances (see
-[CLAUDE.md](CLAUDE.md) for the docker setup).
+Status: released (see [CHANGELOG.md](CHANGELOG.md); v0.4.0 made FCM
+addressing FID-only), built per the 14-stage plan in
+[docs/plan/grnoti-plan.md](docs/plan/grnoti-plan.md). `golangci-lint run`
+reports 0 issues, and test coverage of the root package is held at 95% or
+more by `make coverage-check`, measured against real local
+MongoDB/PostgreSQL/Redis/Kafka instances (see [Testing](#testing)).
 
 ## Table of Contents
 
@@ -79,14 +78,13 @@ convention. The direct consequence: **`go get
 github.com/gourdian25/grnoti` pulls in every backend driver, regardless of
 which ones a given deployment actually uses** — the MongoDB driver,
 pgx/v5 (plus sqlc-generated query code), go-redis, IBM's Sarama (Kafka),
-and the Firebase Admin SDK. This is a deliberate divergence from sibling
-repos like `grcache`/`graudit`, which use one subpackage per backend
-specifically to keep unused drivers out of a consumer's dependency graph.
-grnoti accepts that heavier import in exchange for a simpler package to
-navigate (one `import "github.com/gourdian25/grnoti"`, not one per
-backend). If a heavy transitive dependency graph is a concern for your
-deployment, that tradeoff is worth knowing about up front — it isn't
-something `go mod tidy` or build tags can undo here.
+and the Firebase Admin SDK. That's the price of the shape every
+gourdian25 library now shares (`grcache` and `graudit` used to split one
+subpackage per backend, and flattened to match): one
+`import "github.com/gourdian25/grnoti"`, not one per backend, at the cost
+of a heavier dependency graph. If that graph is a concern for your
+deployment, know it up front — it isn't something `go mod tidy` or build
+tags can undo here.
 
 ## Quickstart
 
@@ -107,7 +105,7 @@ if err != nil {
 }
 
 svc, err := grnoti.NewNotificationService(grnoti.ServiceDeps{
-    DeviceStore:  deviceStore,
+    DeviceStore: deviceStore,
     Dispatcher:  dispatcher,
     Templates:   templates,
     Idempotency: grnoti.NewCacheIdempotencyStore(redisCache), // any grcache.Cache
@@ -208,7 +206,7 @@ dlqHandler := grnoti.NewMemoryDLQHandler(3, time.Minute, 10*time.Minute)
 
 config := grnoti.DefaultServiceConfig() // EnableDLQ is already true by default
 svc, err := grnoti.NewNotificationService(grnoti.ServiceDeps{
-    DeviceStore:  deviceStore,
+    DeviceStore: deviceStore,
     Dispatcher:  dispatcher,
     Templates:   templates,
     Idempotency: idempotencyStore,
@@ -509,7 +507,7 @@ make precommit           # fmt + vet + lint + race + coverage-check — run befo
 
 **Coverage scoping caveat**: use `go test -cover .` (a single dot), not
 `go test -cover ./...`. The root package's own coverage is what
-`coverage-check` gates on and reports (95.3% at last check), but running
+`coverage-check` gates on and reports, but running
 against `./...` also compiles and instruments `internal/postgresdb` (sqlc-
 generated query wrappers with no test file of their own, so it always
 reports a flat 0%) and the `example` command package (also untested by
@@ -529,12 +527,14 @@ exception**: it has no local emulator to test against, so
 `dispatcher.fcm_test.go` uses a hand-rolled fake `FCMClient` instead.
 Tests skip gracefully (`t.Skip`, not fail) when a backend isn't running
 locally, so `go test .` still works with no containers up — but the tests
-that matter for a given change need the real thing. See
-[CLAUDE.md](CLAUDE.md) for the exact `docker run` commands (or `make
-docker-up`/`make docker-down` to start/stop them all at once) — these
-containers are shared across the whole gourdian25 workspace (grnoti,
-graudit, grcache, gourdiantoken all test against the same running
-instances, each using its own database/keyspace/DB-index).
+that matter for a given change need the real thing. `make docker-up`
+starts them: the containers are shared across the whole gourdian25
+workspace (each repo uses its own database/keyspace/DB-index inside them),
+and grsentry's `docker-compose.yml` is the source of truth for how they're
+built — see [CLAUDE.md](CLAUDE.md). Run `make docker-up` even when the
+containers are already running: it also creates the `grnoti_test`
+database, and without it every Postgres test skips and coverage falls
+well below the 95% gate.
 
 **Benchmarks**: `make bench` (`go test -bench=. -benchmem -benchtime=10s
 ./...`) is a defined Makefile target, but there are currently no
@@ -640,14 +640,15 @@ section draws from.
 ## Development
 
 ```sh
-make docker-up   # start the shared Postgres/Redis/Mongo/Kafka test containers
+make docker-up   # start the shared Postgres/Redis/Mongo/Kafka test containers + grnoti_test
 make precommit   # fmt + vet + lint + race + coverage-check
 make docker-down # stop them when you're done
 ```
 
-These containers are shared with graudit, grcache, and gourdiantoken (each
-gets its own database/keyspace) — see [CLAUDE.md](CLAUDE.md) for backend
-setup, test scoping, and conventions.
+These containers are shared with every other gourdian25 repo (each gets
+its own database/keyspace) and built per grsentry's `docker-compose.yml` —
+see [CLAUDE.md](CLAUDE.md) for backend setup, test scoping, and
+conventions.
 
 ## Contributing
 

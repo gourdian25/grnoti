@@ -31,16 +31,17 @@ is a real Go subpackage, but an unexported `internal/` one: not importable
 outside this module, so it doesn't undermine the "flat public API" claim,
 and it's excluded from this repo's coverage target (see §5).
 
-**This is a deliberate divergence from sibling repos** like `grcache` and
-`graudit`, which use one subpackage per backend (e.g. `grcache/redis`,
-`grcache/postgres`) specifically to keep unused backend drivers out of a
-consumer's dependency graph. grnoti accepts that cost instead — importing
+**Every gourdian25 library now shares this shape.** grnoti was the first
+built this way; `grcache` and `graudit` used to split one subpackage per
+backend (e.g. `grcache/redis`, `grcache/postgres`) specifically to keep
+unused backend drivers out of a consumer's dependency graph, and have
+since flattened to match. The cost is accepted on purpose — importing
 `grnoti` at all pulls in the MongoDB driver, pgx/v5 + sqlc-generated
 Postgres code, go-redis, sarama (Kafka), and the Firebase Admin SDK,
-regardless of which backends a given deployment actually uses. This
-follows `gourdiantoken`'s precedent rather than `grcache`'s. The tradeoff:
-a simpler package to navigate and import (one `import "grnoti"`, not one
-per backend) at the cost of a heavier dependency graph for every consumer.
+regardless of which backends a given deployment actually uses. The
+tradeoff: a simpler package to navigate and import (one `import "grnoti"`,
+not one per backend) at the cost of a heavier dependency graph for every
+consumer.
 
 ## 2. Interfaces and backend matrix
 
@@ -128,8 +129,8 @@ the reference implementation's single mutable-map type that conflated
 for where the assignment cache lives: `deterministicExperimentEngine`
 (an in-process map guarded by a `sync.RWMutex`) for single-instance
 deployments, and
-`cacheExperimentEngine` (backed by any `grcache.Cache`, e.g.
-`grcache/redis`) so multiple service instances share one assignment
+`cacheExperimentEngine` (backed by any `grcache.Cache`, e.g. one from
+`grcache.NewRedisCache`) so multiple service instances share one assignment
 cache instead of each independently recomputing and caching — both
 produce the identical variant for a given input regardless, since
 assignment is deterministic; the cache is purely an optimization, never a
@@ -179,7 +180,8 @@ all nil-safe and only log a warning on failure).
 `grcache.Cache` — the reference implementation instead hand-wrote separate
 ~150-400 line Redis and Mongo clients for idempotency alone. Backend
 choice for these three concerns becomes "which `grcache.Cache` the caller
-constructs and passes in" (`grcache/redis`, `grcache/memory`, ...), not
+constructs and passes in" (`grcache.NewRedisCache`,
+`grcache.NewMemoryCache`, ...), not
 "which grnoti-specific store type to construct." A cache read/write
 failure always degrades to hitting the durable store directly (for
 preferences) or is surfaced as an error the caller can log (for
@@ -269,7 +271,8 @@ wrapped in a Postgres advisory lock (`grnotiSchemaLockKey`, a fixed
 constant, via `applyPostgresSchema`) so concurrent connects (multiple
 stores constructed from goroutines, or multiple service replicas racing
 on first boot) serialized instead of racing on catalog DDL, with
-`PostgresConfig.SkipSchemaEnsure` as a per-store opt-out. That required
+`PostgresConfig.SkipSchemaEnsure` as a per-store opt-out (both removed
+in v0.2.0). That required
 the runtime connection's role to have `CREATE` on the target schema,
 which a deliberately least-privilege application role (a common
 production setup — a separate role owns migrations, the app connects
@@ -316,15 +319,16 @@ never needs a schema migration in a consumer.
 ## 4. Testing philosophy
 
 Every backend is tested against a real local instance — Docker containers
-for MongoDB, PostgreSQL, Redis, and Kafka (KRaft-mode, no Zookeeper) — not
-mocks. **FCM is the one deliberate exception**, via a hand-rolled fake
+for MongoDB, PostgreSQL, Redis, and Kafka (KRaft-mode, no Zookeeper), shared
+with every gourdian25 repo and built per grsentry's `docker-compose.yml`
+(`make docker-up`) — not mocks. **FCM is the one deliberate exception**, via a hand-rolled fake
 `FCMClient` (`dispatcher.fcm_test.go`), since Firebase has no local
 emulator to run against. This is a stronger bar than typical
 interface-mocking unit tests, and it caught real, previously-latent bugs
 that code review alone did not — most notably:
 
 - The reference implementation had a confirmed data race in its
-  experiment-assignment map under concurrent access (see §9 item 2 in the
+  experiment-assignment map under concurrent access (see §2 item 2 in the
   plan doc); `experiment.go` was designed to avoid it from the start, and
   `TestDeterministicExperimentEngine_ConcurrentAssignVariant` is the
   falsifying test run under `-race` with real concurrent goroutines that

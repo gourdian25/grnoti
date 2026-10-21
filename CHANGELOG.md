@@ -73,6 +73,21 @@ docs/architecture.md §3.13.
   `github.com/redis/go-redis/v9` v9.21.0 → v9.22.0,
   `go.mongodb.org/mongo-driver/v2` v2.8.0 → v2.9.1.
 
+### Development
+
+- `make docker-up` now builds the shared test containers the way
+  grsentry's `docker-compose.yml` (the source of truth) does. It reuses
+  existing containers, creates missing ones from that compose file when
+  grsentry is checked out beside grnoti, or otherwise with `make
+  docker-create` (mirrored `docker run` commands). It then creates
+  `grnoti_test` and waits on each service with a 60s bound. Before this it
+  waited on Mongo's port 27017 forever, because compose runs mongod on
+  27018 inside its container.
+- Documentation brought in line with the code: the shared package-shape
+  story (grcache and graudit are flat now), the shared-container setup and
+  the `grnoti_test` silent-skip trap, the supported-versions table, and the
+  untested-branch comments `docs/architecture.md` §6 promises.
+
 ## [0.3.0] - 2026-09-05
 
 Migrates the Mongo-backed DLQ and token-store backends from

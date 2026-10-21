@@ -131,6 +131,9 @@ func (c *kafkaEventConsumer) Start(ctx context.Context, handler func(context.Con
 			if c.closed.Load() {
 				return nil
 			}
+			// Deliberately untested: reaching this needs a fake
+			// sarama.ConsumerGroup whose Consume fails while the consumer
+			// is still open (docs/architecture.md §6).
 			c.logger.Error("grnoti/kafka: consume error", "error", err)
 			return fmt.Errorf("grnoti/kafka: consume: %w", err)
 		}
@@ -147,6 +150,8 @@ func (c *kafkaEventConsumer) Close() error {
 	c.closeOnce.Do(func() {
 		c.closed.Store(true)
 		if cerr := c.consumerGroup.Close(); cerr != nil {
+			// Deliberately untested: needs a fake sarama.ConsumerGroup whose
+			// Close fails (docs/architecture.md §6).
 			err = fmt.Errorf("grnoti/kafka: close consumer group: %w", cerr)
 		}
 		c.logger.Info("grnoti/kafka: consumer closed")

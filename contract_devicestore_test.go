@@ -11,7 +11,7 @@ import (
 // backend must satisfy identically, per gourdiantoken's own table-driven
 // cross-backend testing convention (see docs/plan/grnoti-plan.md §4, §7) —
 // grnoti's flat, no-subpackage layout means there's no import-cycle reason
-// for a separate conformance package the way grcache/graudit need one.
+// for a separate conformance package.
 //
 // newStore takes the currently-executing *testing.T (not a captured outer
 // one) so a backend-unavailable skip inside it calls Skip on the actual

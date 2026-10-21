@@ -55,8 +55,8 @@ func pgInt32(n int) int32 {
 // from hand-written code, and distinct from the subpackage-per-backend
 // pattern grnoti deliberately avoids (see docs/plan/grnoti-plan.md §4):
 // internal/ packages aren't importable outside this module at all, so
-// this isn't a public API surface the way grcache/redis or grcache/postgres
-// are.
+// this isn't a public API surface the way grcache's old per-backend
+// subpackages (grcache/redis, grcache/postgres) were.
 //
 //go:embed internal/postgresdb/schema.sql
 var postgresSchemaSQL string

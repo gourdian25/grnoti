@@ -110,7 +110,8 @@ give each store its own `DSN` or share one `Pool` across all four, per
 
 An earlier iteration of this package had every `New*Postgres*` constructor
 apply its schema automatically on every connect, with a
-`PostgresConfig.SkipSchemaEnsure` flag to opt individual stores out of it.
+`PostgresConfig.SkipSchemaEnsure` flag to opt individual stores out of it
+(both removed in v0.2.0).
 That works fine as long as the pool's connection role has `CREATE` on the
 target schema — but a common, deliberate production setup is the
 opposite: one Postgres role owns migrations (`CREATE`/`ALTER`/`DROP`),

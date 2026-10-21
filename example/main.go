@@ -193,7 +193,7 @@ func run() error {
 //	DeviceStore:        grnoti.NewMongoDeviceStore(grnoti.MongoDeviceStoreConfig{URI: ..., Database: ...})
 //	                    // or grnoti.NewPostgresDeviceStore(grnoti.PostgresConfig{DSN: ...})
 //	PreferencesStore:   grnoti.NewPostgresPreferencesStore(grnoti.PostgresConfig{DSN: ...})
-//	IdempotencyStore:   grnoti.NewCacheIdempotencyStore(<any grcache.Cache, e.g. grcache/redis>)
+//	IdempotencyStore:   grnoti.NewCacheIdempotencyStore(<any grcache.Cache, e.g. grcache.NewRedisCache(...)>)
 //	DLQHandler:         grnoti.NewPostgresDLQHandler(grnoti.PostgresDLQHandlerConfig{...})
 //	                    // or grnoti.NewMongoDLQHandler(grnoti.MongoDLQHandlerConfig{...})
 //	Dispatcher:         grnoti.NewFCMDispatcher(grnoti.FCMDispatcherDeps{Client: <*messaging.Client>})
@@ -208,5 +208,6 @@ func run() error {
 // grnoti.SchemaSQL() through your own migration tool before constructing
 // any of them (grnoti never applies its own schema).
 //
-// See CLAUDE.md for the docker run commands each backend's own tests use,
-// and docs/architecture.md for why the package is structured this way.
+// See CLAUDE.md for the shared containers each backend's own tests use
+// (make docker-up), and docs/architecture.md for why the package is
+// structured this way.

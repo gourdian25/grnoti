@@ -14,7 +14,7 @@ import (
 // cacheExperimentEngine is ExperimentEngine backed by a grcache.Cache for
 // its assignment cache instead of deterministicExperimentEngine's
 // in-process map — useful for multi-instance deployments where sharing
-// the assignment cache (e.g. via grcache/redis) avoids each instance
+// the assignment cache (e.g. via grcache.NewRedisCache) avoids each instance
 // recomputing/re-caching independently. This is purely a performance
 // choice, not a correctness one: assignment is deterministic, so every
 // instance computes the identical variant for a given (userID,
