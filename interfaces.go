@@ -281,6 +281,33 @@ type EventConsumer interface {
 	Close() error
 }
 
+// EventProducer publishes Events to an external sink (Kafka) for an
+// EventConsumer to pick up: the upstream half of the pipeline, for
+// services that emit notification-worthy events rather than send them.
+// Every event is checked with Event.Validate before anything is sent, so
+// a consumer never receives one that fails it.
+type EventProducer interface {
+	// Publish validates and sends one event.
+	//
+	// Returns:
+	//   - error: Event.Validate's sentinel (ErrInvalidEventID, ...) for an
+	//     invalid event, which is not sent; ErrBackendUnavailable if the
+	//     send fails; ctx's error if ctx is already done; ErrClosed after
+	//     Close
+	Publish(ctx context.Context, event Event) error
+
+	// PublishBatch validates and encodes every event before sending any,
+	// and sends nothing if one fails. Once sending starts, a broker
+	// failure can leave the batch partly delivered: Kafka has no
+	// cross-message atomicity without transactions. Consumers dedupe by
+	// EventID (IdempotencyStore), so re-publishing the whole batch is safe.
+	PublishBatch(ctx context.Context, events []Event) error
+
+	// Close stops the producer; it never closes an injected underlying
+	// producer. Idempotent.
+	Close() error
+}
+
 // Metrics receives counters/observations from dispatch and processing.
 // Unlike the reference implementation, the by-type/by-platform variants
 // take both labels together in one call rather than three separate methods
@@ -304,7 +331,8 @@ type Metrics interface {
 //
 // The interface deliberately has no Close(): localRateLimiter owns no
 // resource, so requiring it would force a no-op on every implementation.
-// redisRateLimiter does own a *redis.Client and exposes a Close() error
+// redisRateLimiter owns a *redis.Client (unless one was injected through
+// RedisRateLimiterConfig.Client) and exposes a Close() error
 // method on its concrete type — callers using the Redis-backed variant
 // type-assert to it (or to an io.Closer) when they need to shut it down,
 // the same pattern already used for UpdateLimit.

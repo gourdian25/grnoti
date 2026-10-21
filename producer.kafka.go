@@ -5,6 +5,7 @@ package grnoti
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -176,4 +177,137 @@ func (p *kafkaAnalyticsPublisher) Close() error {
 		p.logger.Info("grnoti/kafka: analytics publisher closed")
 	})
 	return err
+}
+
+// KafkaProducerConfig configures an EventProducer constructed by
+// NewKafkaEventProducer.
+type KafkaProducerConfig struct {
+	// Producer sends every message. Required. It is the caller's: build it
+	// with sarama.NewSyncProducer (or share one the application already
+	// has), choose its acks/retries/idempotence settings, and close it
+	// yourself — grnoti never closes it.
+	Producer sarama.SyncProducer
+	// Topic is where every event is published, normally one of the
+	// KafkaConsumerConfig.Topics a NewKafkaEventConsumer reads. Required.
+	Topic string
+	// Logger receives optional diagnostic messages. A nil Logger disables
+	// logging.
+	Logger Logger
+}
+
+// kafkaEventProducer is the Kafka-backed EventProducer, the counterpart of
+// kafkaEventConsumer: each event is encoded with encoding/json, the format
+// ConsumeClaim decodes, and keyed by EventID. Unlike every other backend in
+// this package it never owns its connection — the producer is always
+// injected — so Close only stops it, and there is no ownership flag to
+// track.
+type kafkaEventProducer struct {
+	producer sarama.SyncProducer
+	topic    string
+	logger   Logger
+
+	closed    atomic.Bool
+	closeOnce sync.Once
+}
+
+var _ EventProducer = (*kafkaEventProducer)(nil)
+
+// NewKafkaEventProducer returns an EventProducer that publishes to
+// cfg.Topic through cfg.Producer. It does no connectivity check of its own:
+// Kafka has no Ping, and an injected producer is already connected.
+//
+// Parameters:
+//   - cfg: KafkaProducerConfig — Producer and Topic are required
+//
+// Returns:
+//   - EventProducer: ready to use
+//   - error: non-nil if Producer or Topic is missing
+func NewKafkaEventProducer(cfg KafkaProducerConfig) (EventProducer, error) {
+	if cfg.Producer == nil {
+		return nil, fmt.Errorf("grnoti/kafka: KafkaProducerConfig.Producer is required")
+	}
+	if cfg.Topic == "" {
+		return nil, fmt.Errorf("grnoti/kafka: KafkaProducerConfig.Topic is required")
+	}
+	logger := OrNop(cfg.Logger)
+	logger.Info("grnoti/kafka: event producer ready", "topic", cfg.Topic)
+	return &kafkaEventProducer{producer: cfg.Producer, topic: cfg.Topic, logger: logger}, nil
+}
+
+// encodeEvent validates event and builds its message: JSON value, EventID
+// key. Publish and PublishBatch share it so a batch is checked exactly as
+// a single event is.
+func (p *kafkaEventProducer) encodeEvent(event Event) (*sarama.ProducerMessage, error) {
+	if err := event.Validate(); err != nil {
+		return nil, err
+	}
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return nil, fmt.Errorf("grnoti/kafka: marshal event %s: %w", event.EventID, err)
+	}
+	return &sarama.ProducerMessage{
+		Topic: p.topic,
+		Key:   sarama.StringEncoder(event.EventID),
+		Value: sarama.ByteEncoder(payload),
+	}, nil
+}
+
+// Publish validates and sends event. sarama's SyncProducer takes no
+// context, so ctx is checked only before sending; a send already under way
+// runs to the producer's own Producer.Timeout.
+func (p *kafkaEventProducer) Publish(ctx context.Context, event Event) error {
+	if p.closed.Load() {
+		return ErrClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	msg, err := p.encodeEvent(event)
+	if err != nil {
+		return err
+	}
+	if _, _, err := p.producer.SendMessage(msg); err != nil {
+		return fmt.Errorf("grnoti/kafka: publish event %s: %w", event.EventID, errors.Join(err, ErrBackendUnavailable))
+	}
+	return nil
+}
+
+// PublishBatch encodes every event before sending any, so one invalid or
+// unencodable event sends nothing; the error names its index and EventID
+// and still wraps its sentinel. The batch then goes out in one
+// SendMessages call. ctx is checked only before sending, as in Publish.
+func (p *kafkaEventProducer) PublishBatch(ctx context.Context, events []Event) error {
+	if p.closed.Load() {
+		return ErrClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(events) == 0 {
+		return nil
+	}
+
+	msgs := make([]*sarama.ProducerMessage, len(events))
+	for i, event := range events {
+		msg, err := p.encodeEvent(event)
+		if err != nil {
+			return fmt.Errorf("grnoti/kafka: batch event %d (%s): %w", i, event.EventID, err)
+		}
+		msgs[i] = msg
+	}
+	if err := p.producer.SendMessages(msgs); err != nil {
+		return fmt.Errorf("grnoti/kafka: publish batch of %d events: %w", len(events), errors.Join(err, ErrBackendUnavailable))
+	}
+	return nil
+}
+
+// Close stops the producer: every later Publish/PublishBatch returns
+// ErrClosed. The injected sarama.SyncProducer is left open — it is the
+// caller's to close. Idempotent.
+func (p *kafkaEventProducer) Close() error {
+	p.closeOnce.Do(func() {
+		p.closed.Store(true)
+		p.logger.Info("grnoti/kafka: event producer closed", "topic", p.topic)
+	})
+	return nil
 }

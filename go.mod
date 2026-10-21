@@ -5,7 +5,7 @@ go 1.26.4
 require (
 	firebase.google.com/go/v4 v4.22.0
 	github.com/IBM/sarama v1.61.0
-	github.com/gourdian25/grcache v0.5.0
+	github.com/gourdian25/grcache v0.6.0
 	github.com/gourdian25/grevents v0.2.0
 	github.com/gourdian25/grlog v0.1.2
 	github.com/jackc/pgx/v5 v5.11.0
@@ -38,7 +38,6 @@ require (
 	github.com/jcmturner/gokrb5/v8 v8.4.4 // indirect
 	github.com/jcmturner/rpc/v2 v2.0.3 // indirect
 	github.com/klauspost/compress v1.20.0 // indirect
-	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.30 // indirect
 	github.com/rcrowley/go-metrics v0.0.0-20250401214520-65e299d6c5c9 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect

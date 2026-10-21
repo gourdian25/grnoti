@@ -3,4 +3,4 @@
 package grnoti
 
 // Version is the semantic version of this module, matching its most recent git tag.
-var Version = "v0.4.0"
+var Version = "v0.5.0"

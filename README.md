@@ -26,6 +26,7 @@ MongoDB/PostgreSQL/Redis/Kafka instances (see [Testing](#testing)).
 - [Quickstart](#quickstart)
 - [Device registration: FIDs only](#device-registration-fids-only)
 - [An intermediate example: DLQ, circuit breaker, rate limiting](#an-intermediate-example-dlq-circuit-breaker-rate-limiting)
+- [Publishing events, and sharing your connections](#publishing-events-and-sharing-your-connections)
 - [Configuration](#configuration)
 - [Public API overview](#public-api-overview)
 - [What you write, not grnoti](#what-you-write-not-grnoti)
@@ -235,6 +236,63 @@ for _, ev := range events {
 }
 ```
 
+## Publishing events, and sharing your connections
+
+The service that *emits* notification events publishes them with an
+`EventProducer`, the counterpart of `NewKafkaEventConsumer`. It takes a
+sarama `SyncProducer` you build and own. grnoti never closes it, so one
+producer can serve the rest of your application too:
+
+```go
+cfg := sarama.NewConfig()
+cfg.Producer.Return.Successes = true // required by sarama.NewSyncProducer
+cfg.Producer.RequiredAcks = sarama.WaitForAll
+producer, err := sarama.NewSyncProducer(brokers, cfg)
+if err != nil {
+    log.Fatal(err)
+}
+defer producer.Close() // yours to close, after the event producer
+
+events, err := grnoti.NewKafkaEventProducer(grnoti.KafkaProducerConfig{
+    Producer: producer,
+    Topic:    "notifications", // what your NewKafkaEventConsumer reads
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer events.Close()
+
+err = events.Publish(ctx, grnoti.Event{
+    EventID: "evt-1", UserID: "user-42", Type: "order_shipped",
+    Priority: grnoti.PriorityHigh, Payload: map[string]string{"order_id": "1001"},
+})
+```
+
+- **Validated first.** `Publish` and `PublishBatch` run `Event.Validate` on
+  every event. An invalid one is not sent and its sentinel comes back
+  (`errors.Is(err, grnoti.ErrInvalidEventID)`, ...). A batch with one
+  invalid event sends **none** of them.
+- **Same wire format as the consumer.** Events are JSON (`encoding/json`),
+  keyed by `EventID`.
+- **A batch can still land partly** if the broker fails mid-send. Kafka has
+  no cross-message atomicity without transactions. Re-publishing the whole
+  batch is safe, since the consuming service dedupes by `EventID` through
+  its `IdempotencyStore`.
+
+The Redis rate limiter can likewise share a go-redis client you already
+hold instead of dialing its own. Set `Client` instead of `Addr` (exactly
+one of the two). grnoti never closes it, exactly as with
+`PostgresConfig.Pool`, and the connection fields (`Password`, `DB`,
+`PoolSize`, timeouts) are then ignored:
+
+```go
+limiter, err := grnoti.NewRedisRateLimiter(grnoti.RedisRateLimiterConfig{
+    Client:            rdb, // any redis.UniversalClient, Cluster and Ring included
+    RequestsPerSecond: 50,
+    BurstSize:         100,
+})
+```
+
 ## Configuration
 
 ### `NewNotificationService(ServiceDeps) (NotificationService, error)`
@@ -307,6 +365,7 @@ each implementation choice.
 | Variant | Constructor |
 |---|---|
 | In-memory store | `NewMemoryPreferencesStore()` |
+| MongoDB store | `NewMongoPreferencesStore(MongoPreferencesStoreConfig)` |
 | PostgreSQL store | `NewPostgresPreferencesStore(PostgresConfig)` |
 | Cache-backed read-through (wraps any `PreferencesStore`) | `NewCachedPreferencesStore(store, grcache.Cache, ttl, Logger)` |
 | Filter (consumes a `PreferencesStore`, used via `ServiceDeps.PreferencesFilter`) | `NewPreferencesFilter(store, Logger)` |
@@ -357,7 +416,7 @@ side-channel event, not a correctness issue with the assignment itself.
 | Variant | Constructor |
 |---|---|
 | Local (per-process) | `NewLocalRateLimiter(requestsPerSecond, burstSize int)` |
-| Redis (distributed) | `NewRedisRateLimiter(RedisRateLimiterConfig)` |
+| Redis (distributed; dials `Addr` or uses your `Client`) | `NewRedisRateLimiter(RedisRateLimiterConfig)` |
 
 **CircuitBreaker**
 
@@ -370,6 +429,7 @@ side-channel event, not a correctness issue with the assignment itself.
 | Role | Constructor |
 |---|---|
 | `EventConsumer` | `NewKafkaEventConsumer(KafkaConsumerConfig)` |
+| `EventProducer` (your `sarama.SyncProducer`, never closed by grnoti) | `NewKafkaEventProducer(KafkaProducerConfig)` |
 | `AnalyticsPublisher` | `NewKafkaAnalyticsPublisher(KafkaAnalyticsPublisherConfig)` |
 
 **Templates, localization, routing, misc.**

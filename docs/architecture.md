@@ -51,14 +51,14 @@ concrete implementations each:
 | Interface           | In-memory (`memory.go`) | Cache-backed (`cache.*.go`) | Mongo | Postgres | Other |
 |----------------------|:---:|:---:|:---:|:---:|---|
 | `DeviceStore`          | ✓ | — | ✓ | ✓ | |
-| `PreferencesStore`     | ✓ | ✓ (read-through) | — | ✓ | |
+| `PreferencesStore`     | ✓ | ✓ (read-through) | ✓ | ✓ | |
 | `DLQHandler`           | ✓ | — | ✓ | ✓ | |
 | `ExperimentStore`      | ✓ | — | — | ✓ | |
 | `ExperimentEngine`     | — | ✓ (`cacheExperimentEngine`) | — | — | `deterministicExperimentEngine` (in-process map) |
 | `IdempotencyStore`     | — | ✓ | — | — | thin adapter over any `grcache.Cache` |
 | `RateLimiter`          | — | — | — | — | `localRateLimiter` (per-process) / `redisRateLimiter` (distributed) |
 | `PushDispatcher`       | — | — | — | — | `fcmDispatcher` (the only real implementation; FCM is the notification backend) |
-| `EventConsumer`/`AnalyticsPublisher` | — | — | — | — | Kafka only (`consumer.kafka.go`/`producer.kafka.go`) |
+| `EventConsumer`/`EventProducer`/`AnalyticsPublisher` | — | — | — | — | Kafka only (`consumer.kafka.go`/`producer.kafka.go`) |
 | `TemplateEngine`       | `defaultTemplateEngine` (in-process) | — | — | — | `localizedTemplateEngine` decorator (locale-aware, wraps another `TemplateEngine`) |
 | `TopicRouter`          | — | — | — | — | `eventTypeTopicRouter` / `staticTopicRouter` / `deviceOnlyRouter` — all pure in-process logic |
 | `CircuitBreaker`       | — | — | — | — | `standardCircuitBreaker` — the one implementation; `CircuitBreaker` is itself an exported interface, and both constructors (`NewCircuitBreaker`, `NewCircuitBreakerWithConfig`) return that interface type, not the concrete struct (see §3.2 for how it's wired into dispatch) |
@@ -86,6 +86,15 @@ it's `ProcessEvent` with the `ProcessingResult` discarded. The reference
 implementation had `EventConsumer` call `ProcessEvent` directly with no
 queue and no backpressure at all — an ingestion burst had nowhere to go
 but straight into synchronous processing.
+
+`EventProducer` (`NewKafkaEventProducer`) is the upstream half, for the
+services that emit events. It runs `Event.Validate` on every event before
+sending anything (a batch with one invalid event sends none), encodes
+with `encoding/json`, the format `ConsumeClaim` decodes, and keys each
+message by `EventID`. A consumer therefore never receives an event that
+fails `Event.Validate`. Since an event is keyed by its own ID,
+Kafka keeps no ordering between events; `IdempotencyStore` dedupes a
+re-published one.
 
 ### 3.2 RateLimiter/CircuitBreaker are actually wired into dispatch
 
@@ -260,6 +269,11 @@ caller inject an already-built `*pgxpool.Pool` instead of supplying a DSN;
 `connectPostgres` tracks whether it dialed the pool itself or received it
 externally (`ownsPool`), and every store's `Close()` only closes the pool
 when it dialed it — an injected, shared pool is never grnoti's to close.
+The same rule now covers every injected connection:
+`RedisRateLimiterConfig.Client` (exactly one of `Addr` or `Client`,
+tracked by `redisRateLimiter.ownsClient`) and
+`KafkaProducerConfig.Producer` (always injected, so
+`kafkaEventProducer.Close` never closes it).
 See [docs/postgres.md](postgres.md) for the full pattern (this is
 documentation, not a new exported connection-builder function — see that
 doc's own reasoning for keeping the pool-construction snippet
