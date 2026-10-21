@@ -17,7 +17,8 @@ import (
 // reference implementation wrote as two separate ~150-400 line hand-rolled
 // Redis and Mongo clients (see docs/plan/grnoti-plan.md §1.1). Backend
 // choice becomes "which grcache.Cache the caller constructs and passes
-// in" (grcache/redis, grcache/mongostore, grcache/memory, ...), not "which
+// in" (grcache.NewRedisCache, grcache.NewMongoCache, grcache.NewMemoryCache,
+// ...), not "which
 // grnoti store type to construct."
 type cacheIdempotencyStore struct {
 	cache     grcache.Cache

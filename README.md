@@ -6,17 +6,17 @@
 
 Push-notification service library for the gourdian ecosystem
 (`github.com/gourdian25/grnoti`): FCM dispatch, idempotent event
-processing, device-token management, durable dead-letter retry, circuit
-breaking, distributed rate limiting, deterministic A/B experiment
-assignment, localization, and topic-based routing, behind a set of
-storage-agnostic interfaces.
+processing, device registration by Firebase Installation ID, durable
+dead-letter retry, circuit breaking, distributed rate limiting,
+deterministic A/B experiment assignment, localization, and topic-based
+routing, behind a set of storage-agnostic interfaces.
 
-Status: feature-complete per the 14-stage build plan
-([docs/plan/grnoti-plan.md](docs/plan/grnoti-plan.md)), pre-tagged-release.
-`golangci-lint run` reports 0 issues; test coverage is 95.3% on the root
-package, enforced by a 95% gate (`make coverage-check`), verified against
-real local MongoDB/PostgreSQL/Redis/Kafka instances (see
-[CLAUDE.md](CLAUDE.md) for the docker setup).
+Status: released (see [CHANGELOG.md](CHANGELOG.md); v0.4.0 made FCM
+addressing FID-only), built per the 14-stage plan in
+[docs/plan/grnoti-plan.md](docs/plan/grnoti-plan.md). `golangci-lint run`
+reports 0 issues, and test coverage of the root package is held at 95% or
+more by `make coverage-check`, measured against real local
+MongoDB/PostgreSQL/Redis/Kafka instances (see [Testing](#testing)).
 
 ## Table of Contents
 
@@ -24,6 +24,7 @@ real local MongoDB/PostgreSQL/Redis/Kafka instances (see
 - [Install](#install)
 - [Dependencies](#dependencies)
 - [Quickstart](#quickstart)
+- [Device registration: FIDs only](#device-registration-fids-only)
 - [An intermediate example: DLQ, circuit breaker, rate limiting](#an-intermediate-example-dlq-circuit-breaker-rate-limiting)
 - [Configuration](#configuration)
 - [Public API overview](#public-api-overview)
@@ -77,14 +78,13 @@ convention. The direct consequence: **`go get
 github.com/gourdian25/grnoti` pulls in every backend driver, regardless of
 which ones a given deployment actually uses** — the MongoDB driver,
 pgx/v5 (plus sqlc-generated query code), go-redis, IBM's Sarama (Kafka),
-and the Firebase Admin SDK. This is a deliberate divergence from sibling
-repos like `grcache`/`graudit`, which use one subpackage per backend
-specifically to keep unused drivers out of a consumer's dependency graph.
-grnoti accepts that heavier import in exchange for a simpler package to
-navigate (one `import "github.com/gourdian25/grnoti"`, not one per
-backend). If a heavy transitive dependency graph is a concern for your
-deployment, that tradeoff is worth knowing about up front — it isn't
-something `go mod tidy` or build tags can undo here.
+and the Firebase Admin SDK. That's the price of the shape every
+gourdian25 library now shares (`grcache` and `graudit` used to split one
+subpackage per backend, and flattened to match): one
+`import "github.com/gourdian25/grnoti"`, not one per backend, at the cost
+of a heavier dependency graph. If that graph is a concern for your
+deployment, know it up front — it isn't something `go mod tidy` or build
+tags can undo here.
 
 ## Quickstart
 
@@ -95,7 +95,7 @@ templates.RegisterTemplate("order_shipped", grnoti.MessageTemplate{
     BodyTemplate:  "Order #{{.order_id}} is on its way.",
 })
 
-tokenStore, err := grnoti.NewMongoTokenStore(grnoti.MongoTokenStoreConfig{URI: mongoURI, Database: "myapp"})
+deviceStore, err := grnoti.NewMongoDeviceStore(grnoti.MongoDeviceStoreConfig{URI: mongoURI, Database: "myapp"})
 if err != nil {
     log.Fatal(err)
 }
@@ -105,7 +105,7 @@ if err != nil {
 }
 
 svc, err := grnoti.NewNotificationService(grnoti.ServiceDeps{
-    TokenStore:  tokenStore,
+    DeviceStore: deviceStore,
     Dispatcher:  dispatcher,
     Templates:   templates,
     Idempotency: grnoti.NewCacheIdempotencyStore(redisCache), // any grcache.Cache
@@ -131,10 +131,38 @@ narrated walkthrough — `go run ./example`, no external services required
 instead of calling FCM). It also documents the exact one-line swap for
 every real backend constructor.
 
+## Device registration: FIDs only
+
+grnoti addresses FCM by Firebase Installation ID (FID), never by the
+registration tokens Firebase is retiring. Register each app installation
+with the FID its client SDK hands to `onRegistered` (`register()` in
+Android firebase-messaging 25.1.0+, the Apple SDK 12.16.0+ with FID
+registration enabled in `Info.plist`, or the Web JS SDK):
+
+```go
+err := deviceStore.SaveDevice(ctx, grnoti.Device{
+    FID:      fid, // 22 characters, e.g. "dIsVQ2QVRT-TW7L6VfeAMh"
+    UserID:   "user-42",
+    Platform: grnoti.PlatformAndroid,
+})
+if errors.Is(err, grnoti.ErrInvalidFID) {
+    // Not an FID: most likely a registration token from a client still on
+    // the deprecated getToken()/onNewToken() APIs.
+}
+```
+
+`SaveDevice` refuses anything that isn't FID-shaped, and so does
+`Event.Validate` for `Event.FIDs`, because FCM answers a registration token
+sent as an FID with `UNREGISTERED`: grnoti would mark the device invalid
+and every push to it would silently stop. Flutter's `firebase_messaging`
+has no FID API yet, so a Flutter app cannot register with grnoti until it
+does. See [docs/architecture.md §3.13](docs/architecture.md) for why
+tokens aren't supported alongside.
+
 ## An intermediate example: DLQ, circuit breaker, rate limiting
 
 The Quickstart above only wires the four *required* `ServiceDeps` fields
-(`TokenStore`, `Dispatcher`, `Templates`, `Idempotency`). A more realistic
+(`DeviceStore`, `Dispatcher`, `Templates`, `Idempotency`). A more realistic
 production wiring also protects the FCM dispatch path itself and gives
 failed sends somewhere durable to land. Building on
 [example/main.go](example/main.go)'s own structure:
@@ -170,7 +198,7 @@ if err != nil {
 }
 
 // A durable dead-letter queue: any dispatch failure not already
-// accounted for by a marked-invalid token is published here instead of
+// accounted for by a marked-invalid FID is published here instead of
 // silently dropped. NewMemoryDLQHandler(maxRetries, retryDelay,
 // maxRetryDelay) shown here; swap for NewPostgresDLQHandler/
 // NewMongoDLQHandler in production for a restart-durable queue.
@@ -178,7 +206,7 @@ dlqHandler := grnoti.NewMemoryDLQHandler(3, time.Minute, 10*time.Minute)
 
 config := grnoti.DefaultServiceConfig() // EnableDLQ is already true by default
 svc, err := grnoti.NewNotificationService(grnoti.ServiceDeps{
-    TokenStore:  tokenStore,
+    DeviceStore: deviceStore,
     Dispatcher:  dispatcher,
     Templates:   templates,
     Idempotency: idempotencyStore,
@@ -213,12 +241,12 @@ for _, ev := range events {
 
 | `ServiceDeps` field | Required? | Notes |
 |---|:---:|---|
-| `TokenStore` | **required** | device-token lookup |
+| `DeviceStore` | **required** | device lookup by user or anonymous ID |
 | `Dispatcher` | **required** | FCM send path |
 | `Templates` | **required** | `Event` → `Message` rendering |
 | `Idempotency` | **required** | duplicate-delivery suppression |
 | `PreferencesFilter` | optional | gates authenticated dispatch on `ShouldSendNotification`; only consulted when `Config.EnablePreferencesFilter` is also set — nil-safe either way |
-| `TopicRouter` | optional | resolves each event's `NotificationTarget` instead of the default direct-token resolution; only consulted when `Config.EnableTopicRouting` is also set |
+| `TopicRouter` | optional | resolves each event's `NotificationTarget` instead of the default per-device resolution; only consulted when `Config.EnableTopicRouting` is also set |
 | `DLQHandler` | optional | receives unresolved dispatch failures; only consulted when `Config.EnableDLQ` is also set |
 | `EventBus` (`grevents.Bus`) | optional | receives lifecycle events; only consulted when `Config.EnableEventBus` is also set — publishing is always best-effort |
 | `Metrics` | optional | per-event/per-platform counters and latency observations |
@@ -235,13 +263,13 @@ disables the behavior it would have enabled.
 | Field | Default | Effect |
 |---|---|---|
 | `IdempotencyTTL` | `24 * time.Hour` | How long a processed event's ID is remembered by `IdempotencyStore` before it could be reprocessed if redelivered again |
-| `MaxTokensPerBatch` | `500` (FCM's own per-multicast-call limit) | Batch size `dispatchToTokens` splits a resolved token list into when `EnforceBatching` is set |
+| `MaxDevicesPerBatch` | `500` (FCM's own per-multicast-call limit) | Batch size `dispatchToDevices` splits a resolved device list into when `EnforceBatching` is set |
 | `EnableMetrics` | `true` | Gates whether `processEvent` calls the configured `Metrics` collector at all |
 | `SkipInvalidEvents` | `false` | A failed `Event.Validate()` is reported as a skip (`ProcessingResult.Skipped`) instead of returned as an error |
-| `EnableTokenDeduplication` | `false` | Deduplicates a resolved token list (by `Token` value) before dispatch |
-| `EnforceBatching` | `false` | Pre-splits a resolved token list into `MaxTokensPerBatch`-sized dispatcher calls, merging the per-batch results — a coarser, caller-controlled layer that composes with (doesn't replace) the dispatcher's own fixed internal FCM batching |
+| `EnableDeviceDeduplication` | `false` | Deduplicates a resolved device list (by `FID`) before dispatch |
+| `EnforceBatching` | `false` | Pre-splits a resolved device list into `MaxDevicesPerBatch`-sized dispatcher calls, merging the per-batch results — a coarser, caller-controlled layer that composes with (doesn't replace) the dispatcher's own fixed internal FCM batching |
 | `EnablePreferencesFilter` | `false` | Consults `ServiceDeps.PreferencesFilter` for authenticated events; no-op if `PreferencesFilter` is nil regardless of this flag |
-| `EnableTopicRouting` | `false` | Consults `ServiceDeps.TopicRouter` to resolve a topic/token target instead of always resolving tokens directly; no-op if `TopicRouter` is nil regardless of this flag |
+| `EnableTopicRouting` | `false` | Consults `ServiceDeps.TopicRouter` to resolve a topic/device target instead of always resolving devices directly; no-op if `TopicRouter` is nil regardless of this flag |
 | `EnableRichPush` | `false` | **Documentation-only.** Not read anywhere in `processEvent` — rich-push fields live on `Message` and are populated by whichever `TemplateEngine` is wired in, independent of this flag |
 | `EnableLocalization` | `false` | **Documentation-only.** Localization is a `TemplateEngine` decorator (`NewLocalizedTemplateEngine`) the caller wraps `ServiceDeps.Templates` in — this flag doesn't gate anything itself |
 | `EnableABTesting` | `false` | **Documentation-only.** A/B variant assignment (`ExperimentEngine.AssignVariant`) happens before an `Event` is even constructed, to decide what goes into its `Payload` — this flag doesn't gate anything itself |
@@ -266,13 +294,13 @@ The tables below are constructor-oriented; see
 interface-by-backend matrix (with checkmarks) and the reasoning behind
 each implementation choice.
 
-**TokenStore**
+**DeviceStore**
 
 | Backend | Constructor |
 |---|---|
-| In-memory | `NewMemoryTokenStore()` |
-| MongoDB | `NewMongoTokenStore(MongoTokenStoreConfig)` |
-| PostgreSQL | `NewPostgresTokenStore(PostgresConfig)` |
+| In-memory | `NewMemoryDeviceStore()` |
+| MongoDB | `NewMongoDeviceStore(MongoDeviceStoreConfig)` |
+| PostgreSQL | `NewPostgresDeviceStore(PostgresConfig)` |
 
 **PreferencesStore / PreferencesFilter**
 
@@ -353,9 +381,9 @@ side-channel event, not a correctness issue with the assignment itself.
 | `LocalizationStore` | `NewInMemoryLocalizationStore()` |
 | `LocaleResolver` (reads a user's stored locale) | `NewPreferencesLocaleResolver(store, fallbackLocale)` |
 | `LocaleResolver` (fixed locale) | `NewStaticLocaleResolver(locale)` |
-| `TopicRouter` (by event type) | `NewEventTypeTopicRouter(topicMappings, TokenStore, Logger)` |
+| `TopicRouter` (by event type) | `NewEventTypeTopicRouter(topicMappings, DeviceStore, Logger)` |
 | `TopicRouter` (fixed topic) | `NewStaticTopicRouter(topic)` |
-| `TopicRouter` (tokens only, no topic routing) | `NewTokenOnlyRouter(TokenStore)` |
+| `TopicRouter` (devices only, no topic routing) | `NewDeviceOnlyRouter(DeviceStore)` |
 | `BatchSplitter` | `NewBatchSplitter()` |
 | `RetryStrategy` (full-jitter backoff) | `NewFullJitterRetry(maxAttempts, baseDelay, maxDelay)` |
 | `RetryStrategy` (never retries) | `NewNoopRetryStrategy()` |
@@ -412,13 +440,13 @@ gap is yours to write:
   SDK directly; grnoti never touches FCM credentials itself.
 
 See [Limitations / out of scope](#limitations--out-of-scope) below for the
-security/ownership responsibilities (token-ownership binding, encryption,
+security/ownership responsibilities (device-ownership binding, encryption,
 template-input sanitization) that are similarly always the caller's, not
 grnoti's.
 
 ## Postgres: sharing one pool across stores
 
-`NewPostgresTokenStore`, `NewPostgresPreferencesStore`,
+`NewPostgresDeviceStore`, `NewPostgresPreferencesStore`,
 `NewPostgresExperimentStore`, and `NewPostgresDLQHandler` each take a
 `PostgresConfig`. Giving each one its own `DSN` means each dials its own
 pool — fine for one store, wasteful for four (`MaxConns` × 4 connections,
@@ -434,7 +462,7 @@ defer pool.Close() // grnoti never closes a Pool it didn't dial itself
 
 // grnoti.SchemaSQL() applied via your own migration tool beforehand --
 // see docs/postgres.md.
-tokenStore, err := grnoti.NewPostgresTokenStore(grnoti.PostgresConfig{Pool: pool})
+deviceStore, err := grnoti.NewPostgresDeviceStore(grnoti.PostgresConfig{Pool: pool})
 preferencesStore, err := grnoti.NewPostgresPreferencesStore(grnoti.PostgresConfig{Pool: pool})
 ```
 
@@ -446,7 +474,7 @@ ownership rules, and why there's no built-in auto-apply.
 
 ## Why storage-agnostic interfaces
 
-Every capability — token storage, preferences, dead-letter retry, rate
+Every capability — device storage, preferences, dead-letter retry, rate
 limiting, experiment assignment — is a small interface with real,
 independently-usable implementations: in-memory (for tests or small
 deployments), MongoDB, PostgreSQL, or a `grcache.Cache`-backed adapter
@@ -479,7 +507,7 @@ make precommit           # fmt + vet + lint + race + coverage-check — run befo
 
 **Coverage scoping caveat**: use `go test -cover .` (a single dot), not
 `go test -cover ./...`. The root package's own coverage is what
-`coverage-check` gates on and reports (95.3% at last check), but running
+`coverage-check` gates on and reports, but running
 against `./...` also compiles and instruments `internal/postgresdb` (sqlc-
 generated query wrappers with no test file of their own, so it always
 reports a flat 0%) and the `example` command package (also untested by
@@ -499,12 +527,14 @@ exception**: it has no local emulator to test against, so
 `dispatcher.fcm_test.go` uses a hand-rolled fake `FCMClient` instead.
 Tests skip gracefully (`t.Skip`, not fail) when a backend isn't running
 locally, so `go test .` still works with no containers up — but the tests
-that matter for a given change need the real thing. See
-[CLAUDE.md](CLAUDE.md) for the exact `docker run` commands (or `make
-docker-up`/`make docker-down` to start/stop them all at once) — these
-containers are shared across the whole gourdian25 workspace (grnoti,
-graudit, grcache, gourdiantoken all test against the same running
-instances, each using its own database/keyspace/DB-index).
+that matter for a given change need the real thing. `make docker-up`
+starts them: the containers are shared across the whole gourdian25
+workspace (each repo uses its own database/keyspace/DB-index inside them),
+and grsentry's `docker-compose.yml` is the source of truth for how they're
+built — see [CLAUDE.md](CLAUDE.md). Run `make docker-up` even when the
+containers are already running: it also creates the `grnoti_test`
+database, and without it every Postgres test skips and coverage falls
+well below the 95% gate.
 
 **Benchmarks**: `make bench` (`go test -bench=. -benchmem -benchtime=10s
 ./...`) is a defined Makefile target, but there are currently no
@@ -519,14 +549,15 @@ bool` helper, matching every other gourdian repo. A backend-native error
 (`mongo.ErrNoDocuments`, `pgx.ErrNoRows`, `redis.Nil`, ...) is always
 translated to one of these before it can leak through a grnoti interface.
 
-The 16 sentinels declared in [errors.go](errors.go):
+The 17 sentinels declared in [errors.go](errors.go):
 
 | Error | Meaning |
 |---|---|
 | `ErrClosed` | A method was called after `Close` |
 | `ErrBackendUnavailable` | A storage backend could not be reached |
 | `ErrInvalidEventID` | `Event.EventID` was empty |
-| `ErrNoTargetSpecified` | An `Event` has none of `UserID`, `AnonymousID`, or `DeviceTokens` set |
+| `ErrNoTargetSpecified` | An `Event` has none of `UserID`, `AnonymousID`, or `FIDs` set |
+| `ErrInvalidFID` | A `Device.FID` or `Event.FIDs` entry is not a Firebase Installation ID (e.g. a legacy registration token) |
 | `ErrInvalidEventType` | `Event.Type` failed `EventType.IsValid()` |
 | `ErrInvalidPriority` | `Event.Priority` failed `Priority.IsValid()` |
 | `ErrTemplateNotFound` | No `MessageTemplate` registered for an event type, and no `EventTypeCustom` fallback either |
@@ -545,12 +576,12 @@ than in `errors.go`, but follow the identical `errors.Is` convention:
 `ErrCircuitOpen`/`ErrTooManyRequests` (`circuitbreaker.go`) and
 `ErrWorkerPoolFull` (`workerpool.go`).
 
-FCM failures additionally get a structured `*FCMError` (`Code`, `Token`,
+FCM failures additionally get a structured `*FCMError` (`Code`, `FID`,
 `Message`, wrapped `Err`), classified into a small `FCMErrorCode` enum
 (`unspecified`, `invalid_argument`, `unregistered`, `sender_id_mismatch`,
 `quota_exceeded`, `unavailable`, `internal`, `third_party_auth_error`)
 with `IsRetryable()`/`IsPermanent()` methods that drive real retry and
-invalid-token decisions in `dispatcher.fcm.go` — not just informational
+invalid-FID decisions in `dispatcher.fcm.go` — not just informational
 classification. Classification itself is two-tier: the FCM Admin SDK's own
 structured `messaging.IsX(err)` checks are tried first (precise, and what
 real production FCM errors actually satisfy), falling back to
@@ -574,10 +605,10 @@ exist.
   publish failure never affects the durable operation
   (dispatch/DLQ/idempotency) it follows — lifecycle events are an
   observability nicety, not part of the delivery guarantee.
-- **`DeviceToken` is a bearer credential grnoti does not verify ownership
-  of.** grnoti does not check that a given token actually belongs to the
+- **A `Device` is registered on the caller's word.** grnoti does not
+  check that a given FID actually belongs to the
   `UserID`/`AnonymousID` it's registered under — that binding is entirely
-  the caller's responsibility at `TokenStore.SaveToken` time.
+  the caller's responsibility at `DeviceStore.SaveDevice` time.
 - **No encryption at rest or in transit is provided by grnoti itself.**
   TLS to Mongo/Postgres/Redis/Kafka, and encrypting any sensitive
   `Event.Payload`/`Message.Data` values before they reach grnoti, are the
@@ -609,14 +640,15 @@ section draws from.
 ## Development
 
 ```sh
-make docker-up   # start the shared Postgres/Redis/Mongo/Kafka test containers
+make docker-up   # start the shared Postgres/Redis/Mongo/Kafka test containers + grnoti_test
 make precommit   # fmt + vet + lint + race + coverage-check
 make docker-down # stop them when you're done
 ```
 
-These containers are shared with graudit, grcache, and gourdiantoken (each
-gets its own database/keyspace) — see [CLAUDE.md](CLAUDE.md) for backend
-setup, test scoping, and conventions.
+These containers are shared with every other gourdian25 repo (each gets
+its own database/keyspace) and built per grsentry's `docker-compose.yml` —
+see [CLAUDE.md](CLAUDE.md) for backend setup, test scoping, and
+conventions.
 
 ## Contributing
 

@@ -451,12 +451,12 @@ func TestKafkaEventConsumer_WiresToNotificationService(t *testing.T) {
 	}
 	defer consumer.Close()
 
-	tokenStore := NewMemoryTokenStore()
-	_ = tokenStore.SaveToken(context.Background(), DeviceToken{Token: "t1", UserID: "u1", Platform: PlatformAndroid})
+	deviceStore := NewMemoryDeviceStore()
+	_ = deviceStore.SaveDevice(context.Background(), Device{FID: testFID("t1"), UserID: "u1", Platform: PlatformAndroid})
 	idempotency := newTestIdempotencyStore(t)
 
 	svc, err := NewNotificationService(ServiceDeps{
-		TokenStore:  tokenStore,
+		DeviceStore: deviceStore,
 		Dispatcher:  &stubDispatcher{},
 		Templates:   NewTemplateEngine(),
 		Idempotency: idempotency,

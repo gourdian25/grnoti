@@ -271,7 +271,7 @@ func TestMongoDLQHandler_Close_Idempotent(t *testing.T) {
 
 // TestMongoDLQHandler_GenericQueryError uses an already-canceled context
 // to force a real query-level error — see the analogous
-// tokenstore.mongo_test.go comment for why this reaches a branch fault
+// devicestore.mongo_test.go comment for why this reaches a branch fault
 // injection would otherwise require.
 func TestMongoDLQHandler_GenericQueryError(t *testing.T) {
 	h := newTestMongoDLQHandler(t, 0)

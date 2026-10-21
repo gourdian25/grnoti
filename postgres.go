@@ -55,8 +55,8 @@ func pgInt32(n int) int32 {
 // from hand-written code, and distinct from the subpackage-per-backend
 // pattern grnoti deliberately avoids (see docs/plan/grnoti-plan.md §4):
 // internal/ packages aren't importable outside this module at all, so
-// this isn't a public API surface the way grcache/redis or grcache/postgres
-// are.
+// this isn't a public API surface the way grcache's old per-backend
+// subpackages (grcache/redis, grcache/postgres) were.
 //
 //go:embed internal/postgresdb/schema.sql
 var postgresSchemaSQL string
@@ -67,7 +67,7 @@ var postgresSchemaSQL string
 // plain SQL file run in CI, whatever you already use) before constructing
 // any of grnoti's four Postgres-backed stores:
 //
-//   - grnoti_tokens      — NewPostgresTokenStore
+//   - grnoti_devices     — NewPostgresDeviceStore
 //   - grnoti_preferences — NewPostgresPreferencesStore
 //   - grnoti_experiments — NewPostgresExperimentStore
 //   - grnoti_dlq         — NewPostgresDLQHandler
@@ -145,7 +145,7 @@ type PostgresConfig struct {
 // already exist before this is called, applied through your own
 // project's migration tool. Calling this against a database where they
 // don't exist yet doesn't fail here — it fails on the first actual store
-// method call (SaveToken, GetPreferences, ClaimRetryableEvents, ...) with
+// method call (SaveDevice, GetPreferences, ClaimRetryableEvents, ...) with
 // a plain Postgres "relation does not exist" error.
 func connectPostgres(ctx context.Context, cfg PostgresConfig, component string) (*pgxpool.Pool, *postgresdb.Queries, bool, error) {
 	if (cfg.DSN == "") == (cfg.Pool == nil) {

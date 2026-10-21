@@ -25,7 +25,7 @@ func NewPreferencesFilter(store PreferencesStore, logger Logger) PreferencesFilt
 
 func (f *preferencesFilter) ShouldSendNotification(ctx context.Context, event Event) (bool, string, error) {
 	if !event.IsAuthenticated() {
-		// Anonymous/direct-token targets have no PreferencesStore entry to
+		// Anonymous/direct-FID targets have no PreferencesStore entry to
 		// evaluate against.
 		return true, "", nil
 	}

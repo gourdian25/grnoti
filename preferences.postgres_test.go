@@ -102,7 +102,7 @@ func TestPostgresPreferencesStore_Close_Idempotent(t *testing.T) {
 
 // TestPostgresPreferencesStore_GenericQueryError uses an already-canceled
 // context to force a real query-level error — see the analogous
-// tokenstore.postgres_test.go comment for why this reaches a branch fault
+// devicestore.postgres_test.go comment for why this reaches a branch fault
 // injection would otherwise require.
 func TestPostgresPreferencesStore_GenericQueryError(t *testing.T) {
 	store := newTestPostgresPreferencesStore(t)

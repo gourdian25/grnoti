@@ -197,6 +197,10 @@ func (h *mongoDLQHandler) ClaimRetryableEvents(ctx context.Context, limit int) (
 			if errors.Is(err, mongo.ErrNoDocuments) {
 				break
 			}
+			// Deliberately untested: a mid-loop failure is a network-timing race
+			// against a real Mongo with no hook to pin it (docs/architecture.md
+			// §6). Already-claimed events still go back to the caller, which
+			// must process them (DLQHandler.ClaimRetryableEvents).
 			return claimed, fmt.Errorf("grnoti/mongo: claim retryable events: %w", errors.Join(err, ErrBackendUnavailable))
 		}
 		claimed = append(claimed, doc.toDLQEvent())

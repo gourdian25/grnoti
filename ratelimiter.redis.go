@@ -17,7 +17,7 @@ const (
 	redisRateLimiterReadTimeout  = 3 * time.Second
 	redisRateLimiterWriteTimeout = 3 * time.Second
 	redisRateLimiterPingTimeout  = 5 * time.Second
-	redisRateLimiterPoolSize     = 100 // matches grcache/redis's own gourdiantoken-derived default
+	redisRateLimiterPoolSize     = 100 // matches grcache's Redis backend default (itself gourdiantoken-derived)
 
 	// redisRateLimiterKeyTTL bounds how long an idle bucket's Redis hash
 	// survives. Set well above any plausible refill window so a bucket
@@ -97,7 +97,7 @@ return allowed
 
 // RedisRateLimiterConfig configures a redisRateLimiter constructed by
 // NewRedisRateLimiter. Zero-valued connection fields fall back to the same
-// defaults as grcache/redis's RedisConfig; RequestsPerSecond and BurstSize
+// defaults as grcache.RedisConfig; RequestsPerSecond and BurstSize
 // have no sensible zero value and must be set explicitly.
 type RedisRateLimiterConfig struct {
 	// Addr is the Redis server address, e.g. "localhost:6379". Required.
@@ -178,7 +178,7 @@ type redisRateLimiter struct {
 var _ RateLimiter = (*redisRateLimiter)(nil)
 
 // NewRedisRateLimiter builds its own *redis.Client from cfg and validates
-// connectivity with a Ping before returning, mirroring grcache/redis's
+// connectivity with a Ping before returning, mirroring grcache.NewRedisCache's
 // constructor-time validation.
 //
 // Parameters:

@@ -2,37 +2,37 @@
 
 package grnoti
 
-type tokenBatchSplitter struct{}
+type deviceBatchSplitter struct{}
 
-var _ BatchSplitter = tokenBatchSplitter{}
+var _ BatchSplitter = deviceBatchSplitter{}
 
 // NewBatchSplitter returns a stateless BatchSplitter.
-func NewBatchSplitter() BatchSplitter { return tokenBatchSplitter{} }
+func NewBatchSplitter() BatchSplitter { return deviceBatchSplitter{} }
 
-func (tokenBatchSplitter) Deduplicate(tokens []DeviceToken) []DeviceToken {
-	seen := make(map[string]struct{}, len(tokens))
-	out := make([]DeviceToken, 0, len(tokens))
-	for _, t := range tokens {
-		if _, ok := seen[t.Token]; ok {
+func (deviceBatchSplitter) Deduplicate(devices []Device) []Device {
+	seen := make(map[string]struct{}, len(devices))
+	out := make([]Device, 0, len(devices))
+	for _, dev := range devices {
+		if _, ok := seen[dev.FID]; ok {
 			continue
 		}
-		seen[t.Token] = struct{}{}
-		out = append(out, t)
+		seen[dev.FID] = struct{}{}
+		out = append(out, dev)
 	}
 	return out
 }
 
-func (tokenBatchSplitter) Split(tokens []DeviceToken, maxBatchSize int) [][]DeviceToken {
-	if maxBatchSize <= 0 || len(tokens) == 0 {
-		return [][]DeviceToken{tokens}
+func (deviceBatchSplitter) Split(devices []Device, maxBatchSize int) [][]Device {
+	if maxBatchSize <= 0 || len(devices) == 0 {
+		return [][]Device{devices}
 	}
-	batches := make([][]DeviceToken, 0, (len(tokens)+maxBatchSize-1)/maxBatchSize)
-	for i := 0; i < len(tokens); i += maxBatchSize {
+	batches := make([][]Device, 0, (len(devices)+maxBatchSize-1)/maxBatchSize)
+	for i := 0; i < len(devices); i += maxBatchSize {
 		end := i + maxBatchSize
-		if end > len(tokens) {
-			end = len(tokens)
+		if end > len(devices) {
+			end = len(devices)
 		}
-		batches = append(batches, tokens[i:end])
+		batches = append(batches, devices[i:end])
 	}
 	return batches
 }

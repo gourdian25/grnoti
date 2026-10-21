@@ -2,7 +2,10 @@
 
 package grnoti
 
-import "time"
+import (
+	"regexp"
+	"time"
+)
 
 // Priority is a notification's delivery priority.
 type Priority string
@@ -33,12 +36,12 @@ func (p Priority) IsValid() bool {
 	}
 }
 
-// Platform is the device platform a DeviceToken/DispatchResult applies to.
+// Platform is the device platform a Device/DispatchResult applies to.
 type Platform string
 
 const (
-	// PlatformAndroid is also the fallback platform resolveTokensForEvent
-	// (topicrouter.go) assigns to direct tokens supplied on an Event — bare
+	// PlatformAndroid is also the fallback platform resolveDevicesForEvent
+	// (topicrouter.go) assigns to direct FIDs supplied on an Event — bare
 	// strings with no platform information of their own.
 	PlatformAndroid Platform = "android"
 	PlatformIOS     Platform = "ios"
@@ -79,12 +82,12 @@ const (
 
 // Event is the unit of work a NotificationService processes: a single
 // notification-worthy occurrence for one target (an authenticated user, an
-// anonymous visitor, or a fixed set of device tokens).
+// anonymous visitor, or a fixed set of devices addressed by FID).
 type Event struct {
 	EventID      string            `json:"event_id" bson:"event_id"`
 	UserID       string            `json:"user_id,omitempty" bson:"user_id,omitempty"`
 	AnonymousID  string            `json:"anonymous_id,omitempty" bson:"anonymous_id,omitempty"`
-	DeviceTokens []string          `json:"device_tokens,omitempty" bson:"device_tokens,omitempty"`
+	FIDs         []string          `json:"fids,omitempty" bson:"fids,omitempty"`
 	Type         EventType         `json:"type" bson:"type"`
 	Payload      map[string]string `json:"payload" bson:"payload"`
 	Priority     Priority          `json:"priority" bson:"priority"`
@@ -99,13 +102,13 @@ func (e Event) IsAuthenticated() bool { return e.UserID != "" }
 // set, UserID not).
 func (e Event) IsAnonymous() bool { return e.AnonymousID != "" }
 
-// HasDirectTokens reports whether e targets an explicit set of device
-// tokens, bypassing TokenStore lookup entirely.
-func (e Event) HasDirectTokens() bool { return len(e.DeviceTokens) > 0 }
+// HasDirectFIDs reports whether e targets an explicit set of FIDs,
+// bypassing DeviceStore lookup entirely.
+func (e Event) HasDirectFIDs() bool { return len(e.FIDs) > 0 }
 
 // GetTargetID returns whichever identifier best names e's recipient, for
 // logging/metrics — UserID, else AnonymousID, else the literal "direct" for
-// a token-only Event.
+// an FID-only Event.
 func (e Event) GetTargetID() string {
 	if e.UserID != "" {
 		return e.UserID
@@ -119,16 +122,18 @@ func (e Event) GetTargetID() string {
 // Validate checks that e has the minimum fields required to be processed.
 //
 // Returns:
-//   - error: ErrInvalidEventID, ErrNoTargetSpecified, ErrInvalidEventType,
-//     or ErrInvalidPriority — each a distinct sentinel for a distinct
-//     condition (the reference implementation reused one sentinel for two
-//     of these; see docs/plan/grnoti-plan.md §2 item 6)
+//   - error: ErrInvalidEventID, ErrNoTargetSpecified, ErrInvalidFID,
+//     ErrInvalidEventType, or ErrInvalidPriority — each a distinct sentinel
+//     for a distinct condition (the reference implementation reused one
+//     sentinel for two of these; see docs/plan/grnoti-plan.md §2 item 6)
 func (e Event) Validate() error {
 	switch {
 	case e.EventID == "":
 		return ErrInvalidEventID
-	case e.UserID == "" && e.AnonymousID == "" && len(e.DeviceTokens) == 0:
+	case e.UserID == "" && e.AnonymousID == "" && len(e.FIDs) == 0:
 		return ErrNoTargetSpecified
+	case !allValidFIDs(e.FIDs):
+		return ErrInvalidFID
 	case !e.Type.IsValid():
 		return ErrInvalidEventType
 	case !e.Priority.IsValid():
@@ -137,9 +142,11 @@ func (e Event) Validate() error {
 	return nil
 }
 
-// DeviceToken is a single registered push-notification destination.
-type DeviceToken struct {
-	Token       string    `json:"token" bson:"token"`
+// Device is one app installation registered for push notifications,
+// addressed by its Firebase Installation ID. DeviceID is the application's
+// own identifier for the physical device, unrelated to FCM addressing.
+type Device struct {
+	FID         string    `json:"fid" bson:"fid"`
 	Platform    Platform  `json:"platform" bson:"platform"`
 	UserID      string    `json:"user_id,omitempty" bson:"user_id,omitempty"`
 	AnonymousID string    `json:"anonymous_id,omitempty" bson:"anonymous_id,omitempty"`
@@ -148,6 +155,42 @@ type DeviceToken struct {
 	IsActive    bool      `json:"is_active" bson:"is_active"`
 	CreatedAt   time.Time `json:"created_at" bson:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at" bson:"updated_at"`
+}
+
+// Validate checks that d can be registered: d.FID must be a Firebase
+// Installation ID (see validFID). Every DeviceStore's SaveDevice calls it.
+//
+// Returns:
+//   - error: ErrInvalidFID
+func (d Device) Validate() error {
+	if !validFID(d.FID) {
+		return ErrInvalidFID
+	}
+	return nil
+}
+
+// fidPattern is the Firebase JS SDK's VALID_FID_PATTERN
+// (packages/installations/src/helpers/generate-fid.ts), with \w spelled
+// out: 22 URL-safe base64 characters whose first 4 bits are the FID header
+// 0b0111, so the first character is one of c, d, e or f.
+var fidPattern = regexp.MustCompile(`^[cdef][A-Za-z0-9_-]{21}$`)
+
+// validFID reports whether s has the shape of a Firebase Installation ID.
+// grnoti addresses FCM by FID only (firebase-admin-go deprecates its
+// registration-token fields), and a legacy registration token — well
+// over 100 characters — never matches, so an app still on the deprecated
+// token APIs is refused when it registers rather than having every push
+// answered as unregistered and its devices pruned.
+func validFID(s string) bool { return fidPattern.MatchString(s) }
+
+// allValidFIDs reports whether every entry of fids is a valid FID.
+func allValidFIDs(fids []string) bool {
+	for _, fid := range fids {
+		if !validFID(fid) {
+			return false
+		}
+	}
+	return true
 }
 
 // NotificationAction is one rich-push action button.
@@ -178,23 +221,23 @@ type Message struct {
 
 // DispatchResult summarizes the outcome of a PushDispatcher.Send call.
 type DispatchResult struct {
-	// SuccessCount is how many recipients (tokens or, for a topic send, the
+	// SuccessCount is how many recipients (FIDs or, for a topic send, the
 	// single topic) were accepted for delivery.
 	SuccessCount int
 	// FailureCount is how many recipients failed, permanently or
-	// retryably — always >= len(InvalidTokens), since every invalid token
+	// retryably — always >= len(InvalidFIDs), since every invalid FID
 	// is also counted as a failure.
 	FailureCount int
-	// InvalidTokens lists tokens FCM reported as permanently dead
+	// InvalidFIDs lists FIDs FCM reported as permanently dead
 	// (unregistered/sender-mismatch) — the caller is expected to pass
-	// these to TokenStore.MarkInvalid rather than retry them.
-	InvalidTokens []string
+	// these to DeviceStore.MarkInvalid rather than retry them.
+	InvalidFIDs []string
 	// RetryableErrors counts failures classified as transient (see
 	// FCMErrorCode.IsRetryable) — a subset of FailureCount worth another
-	// attempt, as opposed to a permanent per-token failure already
-	// captured in InvalidTokens.
+	// attempt, as opposed to a permanent per-FID failure already
+	// captured in InvalidFIDs.
 	RetryableErrors int
-	// Errors collects the individual per-batch/per-token errors behind
+	// Errors collects the individual per-batch/per-FID errors behind
 	// FailureCount, for logging — see joinDispatchErrors for how
 	// NotificationService summarizes these into one DLQ failure reason.
 	Errors []error
@@ -220,7 +263,7 @@ func (d DispatchResult) HasFailures() bool { return d.FailureCount > 0 }
 type ProcessingResult struct {
 	EventID        string
 	UserID         string
-	TokenCount     int
+	DeviceCount    int
 	DispatchResult DispatchResult
 	ProcessedAt    time.Time
 	Duration       time.Duration
@@ -441,10 +484,10 @@ type ServiceConfig struct {
 	// IdempotencyTTL is how long a processed event's ID is remembered by
 	// IdempotencyStore before it could be reprocessed if redelivered again.
 	IdempotencyTTL time.Duration
-	// MaxTokensPerBatch is the batch size dispatchToTokens splits a token
+	// MaxDevicesPerBatch is the batch size dispatchToDevices splits a device
 	// list into when EnforceBatching is set. Distinct from (and composes
 	// with) dispatcher.fcm.go's own fixed FCMMaxBatchSize internal batching.
-	MaxTokensPerBatch int
+	MaxDevicesPerBatch int
 	// EnableMetrics gates whether processEvent/recordMetrics call the
 	// configured Metrics collector at all.
 	EnableMetrics bool
@@ -452,22 +495,22 @@ type ServiceConfig struct {
 	// Event.Validate() as a skip (ProcessingResult.Skipped, no error
 	// returned) instead of propagating the validation error to the caller.
 	SkipInvalidEvents bool
-	// EnableTokenDeduplication makes dispatchToTokens deduplicate the
-	// resolved token list (via batchSplitter.Deduplicate) before sending,
-	// in case TokenStore ever returns the same token twice.
-	EnableTokenDeduplication bool
-	// EnforceBatching makes dispatchToTokens pre-split a resolved token
-	// list into MaxTokensPerBatch-sized calls to the dispatcher, merging
+	// EnableDeviceDeduplication makes dispatchToDevices deduplicate the
+	// resolved device list (via batchSplitter.Deduplicate) before sending,
+	// in case DeviceStore ever returns the same FID twice.
+	EnableDeviceDeduplication bool
+	// EnforceBatching makes dispatchToDevices pre-split a resolved device
+	// list into MaxDevicesPerBatch-sized calls to the dispatcher, merging
 	// the per-batch DispatchResults — off by default, in which case the
-	// entire token list is passed to the dispatcher in one call.
+	// entire device list is passed to the dispatcher in one call.
 	EnforceBatching bool
 	// EnablePreferencesFilter gates whether processEvent consults
 	// ServiceDeps.PreferencesFilter for authenticated events at all; a nil
 	// PreferencesFilter always skips this check regardless of the flag.
 	EnablePreferencesFilter bool
 	// EnableTopicRouting gates whether processEvent consults
-	// ServiceDeps.TopicRouter to resolve a topic/token target instead of
-	// always resolving tokens directly; a nil TopicRouter always skips
+	// ServiceDeps.TopicRouter to resolve a topic/device target instead of
+	// always resolving devices directly; a nil TopicRouter always skips
 	// this regardless of the flag.
 	EnableTopicRouting bool
 	// EnableRichPush, EnableLocalization, EnableABTesting are
@@ -503,9 +546,9 @@ type ServiceConfig struct {
 // defaults: metrics on, DLQ publishing on, everything else opt-in.
 func DefaultServiceConfig() ServiceConfig {
 	return ServiceConfig{
-		IdempotencyTTL:    24 * time.Hour,
-		MaxTokensPerBatch: 500, // FCM's own per-multicast-call limit
-		EnableMetrics:     true,
-		EnableDLQ:         true,
+		IdempotencyTTL:     24 * time.Hour,
+		MaxDevicesPerBatch: 500, // FCM's own per-multicast-call limit
+		EnableMetrics:      true,
+		EnableDLQ:          true,
 	}
 }

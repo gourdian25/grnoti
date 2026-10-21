@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	// FCMMaxBatchSize is FCM's documented maximum tokens per multicast
+	// FCMMaxBatchSize is FCM's documented maximum FIDs per multicast
 	// request.
 	FCMMaxBatchSize = 500
 
@@ -81,10 +81,10 @@ type FCMDispatcherDeps struct {
 	// CircuitBreaker, if set, wraps every Client call — same §3.2 gap for
 	// CircuitBreaker.
 	CircuitBreaker CircuitBreaker
-	// Metrics, if set, receives IncInvalidTokens for tokens FCM reports as
+	// Metrics, if set, receives IncInvalidFIDs for FIDs FCM reports as
 	// permanently invalid. Send's per-eventType/per-platform metrics
 	// (IncNotificationsSent/Failed, ObserveDispatchLatency) are NOT called
-	// from here: PushDispatcher.Send only ever sees tokens+Message, never
+	// from here: PushDispatcher.Send only ever sees devices+Message, never
 	// the originating Event/EventType those calls require — that wiring
 	// belongs one layer up, in NotificationService (Stage 12), which does
 	// have the Event.
@@ -144,31 +144,31 @@ func NewFCMDispatcher(deps FCMDispatcherDeps) (PushDispatcher, error) {
 	}, nil
 }
 
-// Send dispatches msg to every token, deduplicated, grouped by platform,
+// Send dispatches msg to every device, deduplicated, grouped by platform,
 // and batched at FCMMaxBatchSize — each platform group's batches are sent
 // concurrently with each other (matching the reference's per-platform
 // goroutine fan-out), while batches within one platform are sent
 // sequentially so a shared RateLimiter/CircuitBreaker sees them one at a
 // time in submission order.
-func (d *fcmDispatcher) Send(ctx context.Context, tokens []DeviceToken, msg Message) (DispatchResult, error) {
-	if len(tokens) == 0 {
+func (d *fcmDispatcher) Send(ctx context.Context, devices []Device, msg Message) (DispatchResult, error) {
+	if len(devices) == 0 {
 		return DispatchResult{}, nil
 	}
 	if err := d.payloadValidator.ValidateSize(msg); err != nil {
 		d.logger.Error("grnoti/fcm: payload validation failed", "error", err)
-		return DispatchResult{FailureCount: len(tokens), Errors: []error{err}}, err
+		return DispatchResult{FailureCount: len(devices), Errors: []error{err}}, err
 	}
 
-	byPlatform := make(map[Platform][]DeviceToken)
-	for _, t := range d.batchSplitter.Deduplicate(tokens) {
-		platform := t.Platform
+	byPlatform := make(map[Platform][]Device)
+	for _, dev := range d.batchSplitter.Deduplicate(devices) {
+		platform := dev.Platform
 		if platform == "" {
 			platform = PlatformAndroid // preserve the reference's "default to Android" fallback for an unset platform
 		}
-		byPlatform[platform] = append(byPlatform[platform], t)
+		byPlatform[platform] = append(byPlatform[platform], dev)
 	}
 
-	d.logger.Info("grnoti/fcm: dispatching", "tokens", len(tokens), "platform_groups", len(byPlatform))
+	d.logger.Info("grnoti/fcm: dispatching", "devices", len(devices), "platform_groups", len(byPlatform))
 
 	result := DispatchResult{
 		SuccessByPlatform: make(map[Platform]int, len(byPlatform)),
@@ -176,41 +176,41 @@ func (d *fcmDispatcher) Send(ctx context.Context, tokens []DeviceToken, msg Mess
 	}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	for platform, platformTokens := range byPlatform {
+	for platform, platformDevices := range byPlatform {
 		wg.Add(1)
-		go func(platform Platform, platformTokens []DeviceToken) {
+		go func(platform Platform, platformDevices []Device) {
 			defer wg.Done()
-			r := d.sendPlatformBatches(ctx, platformTokens, msg, platform)
+			r := d.sendPlatformBatches(ctx, platformDevices, msg, platform)
 			mu.Lock()
 			result.SuccessCount += r.SuccessCount
 			result.FailureCount += r.FailureCount
-			result.InvalidTokens = append(result.InvalidTokens, r.InvalidTokens...)
+			result.InvalidFIDs = append(result.InvalidFIDs, r.InvalidFIDs...)
 			result.RetryableErrors += r.RetryableErrors
 			result.Errors = append(result.Errors, r.Errors...)
 			result.SuccessByPlatform[platform] += r.SuccessCount
 			result.FailureByPlatform[platform] += r.FailureCount
 			mu.Unlock()
-		}(platform, platformTokens)
+		}(platform, platformDevices)
 	}
 	wg.Wait()
 
-	if d.metrics != nil && len(result.InvalidTokens) > 0 {
-		d.metrics.IncInvalidTokens(len(result.InvalidTokens))
+	if d.metrics != nil && len(result.InvalidFIDs) > 0 {
+		d.metrics.IncInvalidFIDs(len(result.InvalidFIDs))
 	}
 	d.logger.Info("grnoti/fcm: dispatch complete",
-		"success", result.SuccessCount, "failure", result.FailureCount, "invalid", len(result.InvalidTokens), "retryable", result.RetryableErrors)
+		"success", result.SuccessCount, "failure", result.FailureCount, "invalid", len(result.InvalidFIDs), "retryable", result.RetryableErrors)
 	return result, nil
 }
 
-// sendPlatformBatches splits tokens (already grouped to one platform by the
+// sendPlatformBatches splits devices (already grouped to one platform by the
 // caller) into FCMMaxBatchSize-sized batches and sends each in turn,
 // merging results. A batch is skipped (counted as a failure, not attempted)
 // once ctx is already canceled, rather than letting every remaining batch
 // individually discover that via sendBatch/sendBatchWithRetry — cheaper,
 // and avoids a burst of identical "context canceled" log lines.
-func (d *fcmDispatcher) sendPlatformBatches(ctx context.Context, tokens []DeviceToken, msg Message, platform Platform) DispatchResult {
+func (d *fcmDispatcher) sendPlatformBatches(ctx context.Context, devices []Device, msg Message, platform Platform) DispatchResult {
 	var result DispatchResult
-	for _, batch := range d.batchSplitter.Split(tokens, FCMMaxBatchSize) {
+	for _, batch := range d.batchSplitter.Split(devices, FCMMaxBatchSize) {
 		if err := ctx.Err(); err != nil {
 			result.FailureCount += len(batch)
 			result.Errors = append(result.Errors, err)
@@ -225,7 +225,7 @@ func (d *fcmDispatcher) sendPlatformBatches(ctx context.Context, tokens []Device
 		}
 		result.SuccessCount += batchResult.SuccessCount
 		result.FailureCount += batchResult.FailureCount
-		result.InvalidTokens = append(result.InvalidTokens, batchResult.InvalidTokens...)
+		result.InvalidFIDs = append(result.InvalidFIDs, batchResult.InvalidFIDs...)
 		result.RetryableErrors += batchResult.RetryableErrors
 		result.Errors = append(result.Errors, batchResult.Errors...)
 	}
@@ -237,13 +237,13 @@ func (d *fcmDispatcher) sendPlatformBatches(ctx context.Context, tokens []Device
 // retrying, and they're judged differently: a total request-level failure
 // (sendBatch returns a non-nil error — e.g. the FCM call itself errored,
 // or the circuit breaker rejected it) defers to d.retryStrategy.ShouldRetry,
-// which classifies that specific error; a partial per-token failure
+// which classifies that specific error; a partial per-FID failure
 // (sendBatch returns nil error but result.RetryableErrors > 0) has already
-// had each failing token individually classified by classifyFCMError, so
+// had each failing FID individually classified by classifyFCMError, so
 // RetryableErrors > 0 is itself the retry signal — routing it back through
 // ShouldRetry(attempt, nil) would never retry at all, since a nil err
 // unconditionally means "don't retry" there.
-func (d *fcmDispatcher) sendBatchWithRetry(ctx context.Context, tokens []DeviceToken, msg Message, platform Platform) DispatchResult {
+func (d *fcmDispatcher) sendBatchWithRetry(ctx context.Context, devices []Device, msg Message, platform Platform) DispatchResult {
 	var result DispatchResult
 	var lastErr error
 
@@ -259,7 +259,7 @@ func (d *fcmDispatcher) sendBatchWithRetry(ctx context.Context, tokens []DeviceT
 			}
 		}
 
-		result, lastErr = d.sendBatch(ctx, tokens, msg, platform)
+		result, lastErr = d.sendBatch(ctx, devices, msg, platform)
 
 		shouldRetry := result.RetryableErrors > 0
 		if lastErr != nil {
@@ -272,26 +272,26 @@ func (d *fcmDispatcher) sendBatchWithRetry(ctx context.Context, tokens []DeviceT
 	return result
 }
 
-// sendBatch sends one batch (<= FCMMaxBatchSize tokens), gated through
+// sendBatch sends one batch (<= FCMMaxBatchSize devices), gated through
 // RateLimiter.Wait and wrapped in CircuitBreaker.Execute when configured —
 // the actual wiring the reference implementation built both components for
 // but never connected (docs/plan/grnoti-plan.md §3.2).
-func (d *fcmDispatcher) sendBatch(ctx context.Context, tokens []DeviceToken, msg Message, platform Platform) (DispatchResult, error) {
+func (d *fcmDispatcher) sendBatch(ctx context.Context, devices []Device, msg Message, platform Platform) (DispatchResult, error) {
 	var result DispatchResult
 
 	if d.rateLimiter != nil {
 		if err := d.rateLimiter.Wait(ctx); err != nil {
-			result.FailureCount = len(tokens)
+			result.FailureCount = len(devices)
 			result.Errors = append(result.Errors, fmt.Errorf("grnoti/fcm: rate limiter wait: %w", err))
 			return result, err
 		}
 	}
 
-	tokenStrs := make([]string, len(tokens))
-	for i, t := range tokens {
-		tokenStrs[i] = t.Token
+	fids := make([]string, len(devices))
+	for i, dev := range devices {
+		fids[i] = dev.FID
 	}
-	multicastMsg := d.buildMulticastMessage(tokenStrs, msg, platform)
+	multicastMsg := d.buildMulticastMessage(fids, msg, platform)
 
 	var resp *messaging.BatchResponse
 	sendFn := func() error {
@@ -307,7 +307,7 @@ func (d *fcmDispatcher) sendBatch(ctx context.Context, tokens []DeviceToken, msg
 		err = sendFn()
 	}
 	if err != nil {
-		result.FailureCount = len(tokens)
+		result.FailureCount = len(devices)
 		result.Errors = append(result.Errors, err)
 		return result, err
 	}
@@ -318,10 +318,10 @@ func (d *fcmDispatcher) sendBatch(ctx context.Context, tokens []DeviceToken, msg
 		if sendResp.Success || sendResp.Error == nil {
 			continue
 		}
-		fcmErr := classifyFCMError(sendResp.Error, tokenStrs[idx])
+		fcmErr := classifyFCMError(sendResp.Error, fids[idx])
 		result.Errors = append(result.Errors, fcmErr)
 		if fcmErr.IsPermanent() {
-			result.InvalidTokens = append(result.InvalidTokens, tokenStrs[idx])
+			result.InvalidFIDs = append(result.InvalidFIDs, fids[idx])
 		} else if fcmErr.IsRetryable() {
 			result.RetryableErrors++
 		}
@@ -329,9 +329,9 @@ func (d *fcmDispatcher) sendBatch(ctx context.Context, tokens []DeviceToken, msg
 	return result, nil
 }
 
-// SendToToken sends msg to a single token, gated/wrapped the same way as
+// SendToDevice sends msg to a single device, gated/wrapped the same way as
 // sendBatch.
-func (d *fcmDispatcher) SendToToken(ctx context.Context, token DeviceToken, msg Message) error {
+func (d *fcmDispatcher) SendToDevice(ctx context.Context, device Device, msg Message) error {
 	if err := d.payloadValidator.ValidateSize(msg); err != nil {
 		return err
 	}
@@ -341,7 +341,7 @@ func (d *fcmDispatcher) SendToToken(ctx context.Context, token DeviceToken, msg 
 		}
 	}
 
-	fcmMsg := d.buildFCMMessage(token.Token, msg, token.Platform)
+	fcmMsg := d.buildFCMMessage(device.FID, msg, device.Platform)
 	sendFn := func() error {
 		_, err := d.client.Send(ctx, fcmMsg)
 		return err
@@ -354,11 +354,11 @@ func (d *fcmDispatcher) SendToToken(ctx context.Context, token DeviceToken, msg 
 		err = sendFn()
 	}
 	if err != nil {
-		fcmErr := classifyFCMError(err, token.Token)
-		d.logger.Error("grnoti/fcm: send to token failed", "token", maskToken(token.Token), "code", fcmErr.Code, "error", err)
+		fcmErr := classifyFCMError(err, device.FID)
+		d.logger.Error("grnoti/fcm: send to device failed", "fid", maskFID(device.FID), "code", fcmErr.Code, "error", err)
 		return fcmErr
 	}
-	d.logger.Debug("grnoti/fcm: sent to token", "token", maskToken(token.Token), "platform", token.Platform)
+	d.logger.Debug("grnoti/fcm: sent to device", "fid", maskFID(device.FID), "platform", device.Platform)
 	return nil
 }
 
@@ -408,12 +408,12 @@ func (d *fcmDispatcher) buildTopicMessage(topic string, msg Message) *messaging.
 	}
 }
 
-func (d *fcmDispatcher) buildMulticastMessage(tokens []string, msg Message, platform Platform) *messaging.MulticastMessage {
+func (d *fcmDispatcher) buildMulticastMessage(fids []string, msg Message, platform Platform) *messaging.MulticastMessage {
 	notification := &messaging.Notification{Title: msg.Title, Body: msg.Body}
 	if msg.ImageURL != "" {
 		notification.ImageURL = msg.ImageURL
 	}
-	multicast := &messaging.MulticastMessage{Tokens: tokens, Notification: notification, Data: msg.Data}
+	multicast := &messaging.MulticastMessage{Fids: fids, Notification: notification, Data: msg.Data}
 	switch platform {
 	case PlatformAndroid:
 		multicast.Android = d.buildAndroidConfig(msg)
@@ -425,12 +425,12 @@ func (d *fcmDispatcher) buildMulticastMessage(tokens []string, msg Message, plat
 	return multicast
 }
 
-func (d *fcmDispatcher) buildFCMMessage(token string, msg Message, platform Platform) *messaging.Message {
+func (d *fcmDispatcher) buildFCMMessage(fid string, msg Message, platform Platform) *messaging.Message {
 	notification := &messaging.Notification{Title: msg.Title, Body: msg.Body}
 	if msg.ImageURL != "" {
 		notification.ImageURL = msg.ImageURL
 	}
-	fcmMsg := &messaging.Message{Token: token, Notification: notification, Data: msg.Data}
+	fcmMsg := &messaging.Message{Fid: fid, Notification: notification, Data: msg.Data}
 	switch platform {
 	case PlatformAndroid:
 		fcmMsg.Android = d.buildAndroidConfig(msg)
@@ -610,8 +610,8 @@ var fcmStructuredChecks = []struct {
 	code    FCMErrorCode
 	message string
 }{
-	{messaging.IsUnregistered, FCMErrorCodeUnregistered, "token is no longer registered"},
-	{messaging.IsInvalidArgument, FCMErrorCodeInvalidArgument, "invalid token or payload"},
+	{messaging.IsUnregistered, FCMErrorCodeUnregistered, "FID is no longer registered"},
+	{messaging.IsInvalidArgument, FCMErrorCodeInvalidArgument, "invalid FID or payload"},
 	{messaging.IsSenderIDMismatch, FCMErrorCodeSenderIDMismatch, "sender ID mismatch"},
 	{messaging.IsQuotaExceeded, FCMErrorCodeQuotaExceeded, "quota exceeded"},
 	{messaging.IsUnavailable, FCMErrorCodeUnavailable, "FCM service temporarily unavailable"},
@@ -651,31 +651,31 @@ func classifyFCMErrorStructured(err error) (code FCMErrorCode, message string, o
 // reference also had 12 dead ErrFCM* sentinels that never touched this
 // classification at all — those are simply not present in grnoti's
 // errors.go, so there's nothing to remove.)
-func classifyFCMError(err error, token string) *FCMError {
+func classifyFCMError(err error, fid string) *FCMError {
 	if err == nil {
 		return nil
 	}
 	if code, message, ok := classifyFCMErrorStructured(err); ok {
-		return NewFCMError(code, token, message, err)
+		return NewFCMError(code, fid, message, err)
 	}
 	errMsg := err.Error()
 	switch {
 	case containsAnyFold(errMsg, "unregistered", "not-registered", "NotRegistered"):
-		return NewFCMError(FCMErrorCodeUnregistered, token, "token is no longer registered", err)
+		return NewFCMError(FCMErrorCodeUnregistered, fid, "FID is no longer registered", err)
 	case containsAnyFold(errMsg, "invalid-argument", "InvalidRegistration", "invalid registration"):
-		return NewFCMError(FCMErrorCodeInvalidArgument, token, "invalid token or payload", err)
+		return NewFCMError(FCMErrorCodeInvalidArgument, fid, "invalid FID or payload", err)
 	case containsAnyFold(errMsg, "sender-id-mismatch", "MismatchSenderId"):
-		return NewFCMError(FCMErrorCodeSenderIDMismatch, token, "sender ID mismatch", err)
+		return NewFCMError(FCMErrorCodeSenderIDMismatch, fid, "sender ID mismatch", err)
 	case containsAnyFold(errMsg, "quota-exceeded", "QuotaExceeded", "rate limit"):
-		return NewFCMError(FCMErrorCodeQuotaExceeded, token, "quota exceeded", err)
+		return NewFCMError(FCMErrorCodeQuotaExceeded, fid, "quota exceeded", err)
 	case containsAnyFold(errMsg, "unavailable", "temporarily unavailable"):
-		return NewFCMError(FCMErrorCodeUnavailable, token, "FCM service temporarily unavailable", err)
+		return NewFCMError(FCMErrorCodeUnavailable, fid, "FCM service temporarily unavailable", err)
 	case containsAnyFold(errMsg, "internal", "InternalError"):
-		return NewFCMError(FCMErrorCodeInternal, token, "FCM internal error", err)
+		return NewFCMError(FCMErrorCodeInternal, fid, "FCM internal error", err)
 	case containsAnyFold(errMsg, "third-party-auth-error"):
-		return NewFCMError(FCMErrorCodeThirdPartyAuthErr, token, "third party auth error", err)
+		return NewFCMError(FCMErrorCodeThirdPartyAuthErr, fid, "third party auth error", err)
 	default:
-		return NewFCMError(FCMErrorCodeUnspecified, token, "unspecified FCM error", err)
+		return NewFCMError(FCMErrorCodeUnspecified, fid, "unspecified FCM error", err)
 	}
 }
 
@@ -689,11 +689,11 @@ func containsAnyFold(s string, substrings ...string) bool {
 	return false
 }
 
-// maskToken masks a device token for logging, showing only its first 8 and
-// last 4 characters.
-func maskToken(token string) string {
-	if len(token) <= 12 {
+// maskFID masks an FID for logging, showing only its first 4 and last 2
+// characters: 6 of a valid FID's 22, never enough to address the device.
+func maskFID(fid string) string {
+	if len(fid) <= 6 {
 		return "***"
 	}
-	return token[:8] + "..." + token[len(token)-4:]
+	return fid[:4] + "..." + fid[len(fid)-2:]
 }

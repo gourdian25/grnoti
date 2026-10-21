@@ -19,7 +19,7 @@ is the condensed version so you don't have to open it for routine changes.
 
 **File naming**: every backend for a given concern is
 `<concern>.<backend>.go` with tests in `<concern>.<backend>_test.go` (e.g.
-`tokenstore.mongo.go`, `dlq.postgres.go`, `ratelimiter.redis.go`). In-memory
+`devicestore.mongo.go`, `dlq.postgres.go`, `ratelimiter.redis.go`). In-memory
 variants of every store live together in `memory.go`; `grcache`-backed
 adapters (idempotency, preferences read-through, experiment-assignment
 cache) live in `cache.*.go`. This is a deliberate divergence from sibling
@@ -33,7 +33,7 @@ concrete implementations; `NotificationService` (`service.go`) is the
 orchestrator that composes them all via `ServiceDeps`. The interface list
 and its full in-memory/cache/Mongo/Postgres/other matrix is in
 docs/architecture.md §2 — key ones to know before touching related code:
-`TokenStore`, `PreferencesStore`, `DLQHandler`, `ExperimentStore` +
+`DeviceStore`, `PreferencesStore`, `DLQHandler`, `ExperimentStore` +
 `ExperimentEngine` (assignment is a pure deterministic function, split
 from the store — see §3.5), `IdempotencyStore`, `RateLimiter`,
 `PushDispatcher` (FCM only), `EventConsumer`/`AnalyticsPublisher` (Kafka
@@ -62,6 +62,13 @@ it names):
   the shared-pool pattern for wiring multiple stores off one backend
   connection pool). `Close()` only closes a pool the store dialed itself
   — never one passed in via `Pool`. See [docs/postgres.md](docs/postgres.md).
+- FCM is addressed by Firebase Installation ID only (§3.13): a `Device` is
+  keyed by `FID`, and `dispatcher.fcm.go` sends with `Fid`/`Fids`. Don't
+  reintroduce the SDK's deprecated `Token`/`Tokens` fields, or relax
+  `validFID`: `SaveDevice` and `Event.Validate` refuse a non-FID with
+  `ErrInvalidFID` because FCM answers one `UNREGISTERED`, which would prune
+  the device. Tests name devices with `testFID("t1")`
+  (`contract_helpers_test.go`).
 
 ## Testing philosophy: real local services, not mocks
 
@@ -78,42 +85,38 @@ tests that matter for a given change need the real thing.
 
 ### Starting the backends
 
-These containers are **shared across the whole gourdian25 workspace** (grnoti,
-graudit, grcache, gourdiantoken all test against the same running Postgres/
-Redis/Mongo/Kafka/Memcached instances, each using its own database/keyspace/
-DB-index) — not grnoti-exclusive despite the `gourdian-*` naming below.
-
 ```sh
-docker run -d --name gourdian-postgres -p 5432:5432 \
-  -e POSTGRES_USER=postgres_user \
-  -e POSTGRES_PASSWORD=postgres_password \
-  -e POSTGRES_DB=grnoti_test \
-  postgres:16
-# other repos' own databases (graudit_test, grcache_test, gourdiantoken_test)
-# are created the same way inside this same container — see each repo's own
-# CLAUDE.md.
-
-docker run -d --name gourdian-redis -p 6379:6379 \
-  redis:7 --requirepass redis_password
-# grnoti uses DB 0 (the default); grcache uses DB 14, gourdiantoken uses DB 15.
-
-# Mongo requires a keyFile when --replSet is combined with auth, even for a
-# single-node set — see docs/postgres.md-equivalent Mongo note, or graudit's
-# CLAUDE.md for the full keyfile-generation steps.
-docker volume create gourdian-mongo-keyfile
-docker run --rm -v gourdian-mongo-keyfile:/keyfile-dir mongo:7 bash -c \
-  "openssl rand -base64 756 > /keyfile-dir/mongo-keyfile && chmod 400 /keyfile-dir/mongo-keyfile && chown 999:999 /keyfile-dir/mongo-keyfile"
-docker run -d --name gourdian-mongo-auth -p 27018:27017 \
-  -e MONGO_INITDB_ROOT_USERNAME=root \
-  -e MONGO_INITDB_ROOT_PASSWORD=mongo_password \
-  -v gourdian-mongo-keyfile:/etc/mongo-keyfile-dir \
-  mongo:7 --replSet rs0 --keyFile /etc/mongo-keyfile-dir/mongo-keyfile
-docker exec gourdian-mongo-auth mongosh -u root -p mongo_password \
-  --authenticationDatabase admin --eval 'rs.initiate()'
-
-# KRaft mode, single broker, no Zookeeper needed
-docker run -d --name gourdian-kafka -p 9092:9092 apache/kafka:3.7.0
+make docker-up     # start the shared containers and create grnoti_test
+make docker-down   # stop them (state kept for a fast restart)
 ```
+
+These containers are **shared across the whole gourdian25 workspace**:
+every repo tests against the same running instances, each with its own
+database/keyspace/DB-index. **grsentry's `docker-compose.yml` is the
+source of truth** for how they're built:
+
+| Container | Image | Host port | Notes |
+|-----------|-------|-----------|-------|
+| `gourdian-postgres` | `postgres:18-alpine` | 5432 | user `postgres_user`, password `postgres_password` |
+| `gourdian-redis` | `redis:8-alpine` | 6379 | password `redis_password`; grnoti uses DB 0, grcache 14, gourdiantoken 15 |
+| `gourdian-mongo-auth` | `mongo:8.3` | 27018 | single-node replica set `rs0` with a keyFile; mongod listens on **27018 inside the container too**, so `docker exec ... mongosh` needs `--port 27018`; root user `root`/`mongo_password` |
+| `gourdian-kafka` | `confluentinc/cp-kafka:8.3.2` | 9092 | KRaft, single broker, no ZooKeeper |
+
+`make docker-up` has three paths:
+
+- Containers that already exist, whoever created them, are just started.
+- Missing ones are created by running grsentry's compose file
+  (`GRSENTRY_COMPOSE`, default `../grsentry/docker-compose.yml`), so
+  they're exactly what grsentry runs.
+- In a checkout without grsentry beside it, `make docker-create` builds them
+  with `docker run` commands that mirror that compose file. Keep the two in
+  sync.
+
+Either way, it then creates the `grnoti_test` database and waits (at most
+60s each) for every service. **Run it even when the containers are already
+up.** Without `grnoti_test`, every Postgres test skips (they `t.Skip` on a
+failed connect), and `make coverage-check` fails at about 83% with no
+failing test to explain why.
 
 Postgres schema is not auto-applied: no Postgres-backed store's
 constructor touches `internal/postgresdb/schema.sql` (see
@@ -123,7 +126,7 @@ own migration tool once, before ever constructing one of these stores
 (see [docs/postgres.md](docs/postgres.md)). grnoti's own test suite
 handles this for you automatically: every `newTestPostgres*` helper and
 every "Postgres" contract-test subtest calls `ensureTestPostgresSchema`
-(`tokenstore.postgres_test.go`) first, which applies the schema via the
+(`devicestore.postgres_test.go`) first, which applies the schema via the
 unexported `applyPostgresSchema`, guarded by a Postgres advisory lock so
 concurrent test setup doesn't race on the DDL — so `go test`/`make test`
 work against a freshly created `grnoti_test` database with no manual
@@ -154,7 +157,7 @@ go test -run TestPostgres ./...       # every Postgres-backed test
 go test -run TestMongo ./...          # every Mongo-backed test
 go test -run TestRedisRateLimiter ./...
 go test -run TestKafka ./...
-go test -run TestTokenStore_Contract/Memory ./...   # one contract-test variant
+go test -run TestDeviceStore_Contract/Memory ./...   # one contract-test variant
 ```
 
 ## Everyday commands
@@ -204,7 +207,7 @@ anything else, and re-run `sqlc generate` to restore it.
 ## Conventions
 
 - One flat package. New backend support for an existing concern goes in
-  `<concern>.<backend>.go` (e.g. a hypothetical `tokenstore.dynamodb.go`),
+  `<concern>.<backend>.go` (e.g. a hypothetical `devicestore.dynamodb.go`),
   with its tests in `<concern>.<backend>_test.go`.
 - Every source file starts with a `// File: <path>` comment (bark-managed,
   see above — don't remove it, and don't hand-maintain it either, bark

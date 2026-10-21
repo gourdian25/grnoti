@@ -113,7 +113,7 @@ func TestExperimentRowToDomain_MalformedVariants(t *testing.T) {
 
 // TestPostgresExperimentStore_GenericQueryError uses an already-canceled
 // context to force a real query-level error — see the analogous
-// tokenstore.postgres_test.go comment for why this reaches a branch fault
+// devicestore.postgres_test.go comment for why this reaches a branch fault
 // injection would otherwise require.
 func TestPostgresExperimentStore_GenericQueryError(t *testing.T) {
 	store := newTestPostgresExperimentStore(t)

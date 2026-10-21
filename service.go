@@ -15,8 +15,8 @@ import (
 // ServiceDeps configures a NotificationService constructed by
 // NewNotificationService.
 type ServiceDeps struct {
-	// TokenStore, Dispatcher, Templates, Idempotency are required.
-	TokenStore  TokenStore
+	// DeviceStore, Dispatcher, Templates, Idempotency are required.
+	DeviceStore DeviceStore
 	Dispatcher  PushDispatcher
 	Templates   TemplateEngine
 	Idempotency IdempotencyStore
@@ -25,8 +25,8 @@ type ServiceDeps struct {
 	// authenticated-user dispatch on ShouldSendNotification.
 	PreferencesFilter PreferencesFilter
 	// TopicRouter, if set and Config.EnableTopicRouting, resolves each
-	// Event's NotificationTarget instead of the default direct-tokens
-	// resolution (resolveTokensForEvent in topicrouter.go).
+	// Event's NotificationTarget instead of the default per-device
+	// resolution (resolveDevicesForEvent in topicrouter.go).
 	TopicRouter TopicRouter
 	// DLQHandler, if set and Config.EnableDLQ, receives events whose
 	// dispatch has unresolved failures after the dispatcher's own retry
@@ -41,7 +41,7 @@ type ServiceDeps struct {
 	// Metrics is optional. NotificationService only calls the
 	// per-event/per-platform counters (IncNotificationsProcessed/Sent/
 	// Failed, ObserveDispatchLatency/ProcessingLatency, IncEventsSkipped)
-	// — it deliberately does NOT call IncInvalidTokens, since
+	// — it deliberately does NOT call IncInvalidFIDs, since
 	// dispatcher.fcm.go already calls that itself when the same Metrics
 	// instance is wired into FCMDispatcherDeps.Metrics; calling it again
 	// here would double-count.
@@ -63,7 +63,7 @@ type ServiceDeps struct {
 // implementation's ordering (docs/plan/grnoti-plan.md's Stage 12
 // implementation log).
 type notificationService struct {
-	tokenStore  TokenStore
+	deviceStore DeviceStore
 	dispatcher  PushDispatcher
 	templates   TemplateEngine
 	idempotency IdempotencyStore
@@ -91,7 +91,7 @@ var _ NotificationService = (*notificationService)(nil)
 // NewNotificationService constructs a NotificationService.
 //
 // Parameters:
-//   - deps: ServiceDeps — TokenStore, Dispatcher, Templates, Idempotency
+//   - deps: ServiceDeps — DeviceStore, Dispatcher, Templates, Idempotency
 //     are required; everything else is optional and nil-safe
 //
 // Returns:
@@ -101,8 +101,8 @@ var _ NotificationService = (*notificationService)(nil)
 //   - error: non-nil if a required dependency is missing, or if building
 //     the internal WorkerPool fails
 func NewNotificationService(deps ServiceDeps) (NotificationService, error) {
-	if deps.TokenStore == nil {
-		return nil, fmt.Errorf("grnoti: ServiceDeps.TokenStore is required")
+	if deps.DeviceStore == nil {
+		return nil, fmt.Errorf("grnoti: ServiceDeps.DeviceStore is required")
 	}
 	if deps.Dispatcher == nil {
 		return nil, fmt.Errorf("grnoti: ServiceDeps.Dispatcher is required")
@@ -115,7 +115,7 @@ func NewNotificationService(deps ServiceDeps) (NotificationService, error) {
 	}
 
 	s := &notificationService{
-		tokenStore:        deps.TokenStore,
+		deviceStore:       deps.DeviceStore,
 		dispatcher:        deps.Dispatcher,
 		templates:         deps.Templates,
 		idempotency:       deps.Idempotency,
@@ -191,7 +191,7 @@ func (s *notificationService) Close() error {
 // processEvent is the actual ProcessEvent pipeline:
 //
 //	Validate -> Idempotency check -> Preferences check -> Build message ->
-//	Resolve target -> Dispatch -> Mark invalid tokens -> DLQ ->
+//	Resolve target -> Dispatch -> Mark invalid FIDs -> DLQ ->
 //	Metrics -> Lifecycle events -> Mark processed
 //
 // Two ordering changes from the reference implementation
@@ -207,7 +207,7 @@ func (s *notificationService) Close() error {
 //     the entire DLQ subsystem but never wired it into ProcessEvent at all
 //     (§3.6) — a dispatch that exhausted the dispatcher's own retries
 //     (Stage 10) was logged and nothing more. Here, any dispatch failure
-//     not accounted for by an already-marked-invalid token is published to
+//     not accounted for by an already-marked-invalid FID is published to
 //     the DLQ when Config.EnableDLQ is set.
 func (s *notificationService) processEvent(ctx context.Context, event Event) (ProcessingResult, error) {
 	startTime := time.Now()
@@ -253,17 +253,17 @@ func (s *notificationService) processEvent(ctx context.Context, event Event) (Pr
 	dispatchResult, dispatchErr := s.dispatch(ctx, event, msg, &result)
 	dispatchDuration := time.Since(dispatchStart)
 
-	// A token-based dispatch that resolved zero recipients never called
-	// the dispatcher at all (dispatchToTokens's own early return), so
+	// A device-based dispatch that resolved zero recipients never called
+	// the dispatcher at all (dispatchToDevices's own early return), so
 	// dispatchResult is entirely zero-valued here. A topic-based dispatch
 	// always has TotalCount() >= 1 (its synthetic 1-success/1-failure
 	// result), so this check can't misfire on that path even though it
-	// also leaves result.TokenCount at 0.
-	if result.TokenCount == 0 && dispatchResult.TotalCount() == 0 && dispatchErr == nil {
+	// also leaves result.DeviceCount at 0.
+	if result.DeviceCount == 0 && dispatchResult.TotalCount() == 0 && dispatchErr == nil {
 		if err := s.idempotency.MarkProcessed(ctx, event.EventID, s.config.IdempotencyTTL); err != nil {
 			s.logger.Warn("grnoti: failed to mark event processed", "event_id", event.EventID, "error", err)
 		}
-		return s.skip(result, startTime, "no_active_tokens"), nil
+		return s.skip(result, startTime, "no_active_devices"), nil
 	}
 
 	if dispatchErr != nil {
@@ -277,7 +277,7 @@ func (s *notificationService) processEvent(ctx context.Context, event Event) (Pr
 	}
 	result.DispatchResult = dispatchResult
 
-	s.markInvalidTokens(ctx, event, dispatchResult)
+	s.markInvalidFIDs(ctx, event, dispatchResult)
 	s.publishToDLQIfUnresolved(ctx, event, dispatchResult)
 	s.recordMetrics(event, dispatchResult, dispatchDuration)
 	s.publishLifecycleEvent(ctx, event, dispatchResult)
@@ -291,7 +291,7 @@ func (s *notificationService) processEvent(ctx context.Context, event Event) (Pr
 		s.metrics.ObserveProcessingLatency(result.Duration)
 	}
 	s.logger.Info("grnoti: processed event",
-		"event_id", event.EventID, "tokens", result.TokenCount, "success", dispatchResult.SuccessCount, "failure", dispatchResult.FailureCount, "duration", result.Duration)
+		"event_id", event.EventID, "devices", result.DeviceCount, "success", dispatchResult.SuccessCount, "failure", dispatchResult.FailureCount, "duration", result.Duration)
 
 	return result, nil
 }
@@ -308,8 +308,8 @@ func (s *notificationService) skip(result ProcessingResult, startTime time.Time,
 	return result
 }
 
-// dispatch resolves event's target (topic or tokens, honoring TopicRouter
-// when configured) and sends msg, updating result.TokenCount along the
+// dispatch resolves event's target (topic or devices, honoring TopicRouter
+// when configured) and sends msg, updating result.DeviceCount along the
 // way. A topic-based dispatch reports a synthetic 1-success/1-failure
 // DispatchResult, matching the reference, since FCM's topic-send API
 // reports no per-recipient detail at all (see PushDispatcher.SendToTopic's
@@ -327,40 +327,40 @@ func (s *notificationService) dispatch(ctx context.Context, event Event, msg Mes
 			}
 			return DispatchResult{SuccessCount: 1}, nil
 		}
-		return s.dispatchToTokens(ctx, event, target.GetTokens(), msg, result)
+		return s.dispatchToDevices(ctx, event, target.GetDevices(), msg, result)
 	}
 
-	tokens, err := resolveTokensForEvent(ctx, event, s.tokenStore)
+	devices, err := resolveDevicesForEvent(ctx, event, s.deviceStore)
 	if err != nil {
 		return DispatchResult{}, err
 	}
-	return s.dispatchToTokens(ctx, event, tokens, msg, result)
+	return s.dispatchToDevices(ctx, event, devices, msg, result)
 }
 
-// dispatchToTokens deduplicates (if configured), records result.TokenCount,
-// and sends msg — pre-splitting into Config.MaxTokensPerBatch-sized calls
+// dispatchToDevices deduplicates (if configured), records result.DeviceCount,
+// and sends msg — pre-splitting into Config.MaxDevicesPerBatch-sized calls
 // when Config.EnforceBatching is set (a coarser, caller-controlled batch
 // size distinct from dispatcher.fcm.go's own fixed FCMMaxBatchSize
 // internal batching; the two compose, they don't conflict).
-func (s *notificationService) dispatchToTokens(ctx context.Context, event Event, tokens []DeviceToken, msg Message, result *ProcessingResult) (DispatchResult, error) {
-	if s.config.EnableTokenDeduplication {
-		tokens = s.batchSplitter.Deduplicate(tokens)
+func (s *notificationService) dispatchToDevices(ctx context.Context, event Event, devices []Device, msg Message, result *ProcessingResult) (DispatchResult, error) {
+	if s.config.EnableDeviceDeduplication {
+		devices = s.batchSplitter.Deduplicate(devices)
 	}
-	result.TokenCount = len(tokens)
+	result.DeviceCount = len(devices)
 
-	if len(tokens) == 0 {
+	if len(devices) == 0 {
 		return DispatchResult{}, nil
 	}
 
-	if !s.config.EnforceBatching || s.config.MaxTokensPerBatch <= 0 {
-		return s.dispatcher.Send(ctx, tokens, msg)
+	if !s.config.EnforceBatching || s.config.MaxDevicesPerBatch <= 0 {
+		return s.dispatcher.Send(ctx, devices, msg)
 	}
 
 	var aggregated DispatchResult
 	aggregated.SuccessByPlatform = make(map[Platform]int)
 	aggregated.FailureByPlatform = make(map[Platform]int)
 	var lastErr error
-	for _, batch := range s.batchSplitter.Split(tokens, s.config.MaxTokensPerBatch) {
+	for _, batch := range s.batchSplitter.Split(devices, s.config.MaxDevicesPerBatch) {
 		batchResult, err := s.dispatcher.Send(ctx, batch, msg)
 		if err != nil {
 			lastErr = err
@@ -374,7 +374,7 @@ func (s *notificationService) dispatchToTokens(ctx context.Context, event Event,
 func mergeDispatchResult(dst *DispatchResult, src DispatchResult) {
 	dst.SuccessCount += src.SuccessCount
 	dst.FailureCount += src.FailureCount
-	dst.InvalidTokens = append(dst.InvalidTokens, src.InvalidTokens...)
+	dst.InvalidFIDs = append(dst.InvalidFIDs, src.InvalidFIDs...)
 	dst.RetryableErrors += src.RetryableErrors
 	dst.Errors = append(dst.Errors, src.Errors...)
 	for platform, count := range src.SuccessByPlatform {
@@ -385,23 +385,23 @@ func mergeDispatchResult(dst *DispatchResult, src DispatchResult) {
 	}
 }
 
-func (s *notificationService) markInvalidTokens(ctx context.Context, event Event, dispatchResult DispatchResult) {
-	if len(dispatchResult.InvalidTokens) == 0 {
+func (s *notificationService) markInvalidFIDs(ctx context.Context, event Event, dispatchResult DispatchResult) {
+	if len(dispatchResult.InvalidFIDs) == 0 {
 		return
 	}
-	s.logger.Info("grnoti: marking invalid tokens", "count", len(dispatchResult.InvalidTokens), "event_id", event.EventID)
-	for _, token := range dispatchResult.InvalidTokens {
-		if err := s.tokenStore.MarkInvalid(ctx, token); err != nil {
-			s.logger.Warn("grnoti: failed to mark token invalid", "event_id", event.EventID, "error", err)
+	s.logger.Info("grnoti: marking invalid FIDs", "count", len(dispatchResult.InvalidFIDs), "event_id", event.EventID)
+	for _, fid := range dispatchResult.InvalidFIDs {
+		if err := s.deviceStore.MarkInvalid(ctx, fid); err != nil {
+			s.logger.Warn("grnoti: failed to mark FID invalid", "event_id", event.EventID, "error", err)
 		}
 	}
 }
 
 // publishToDLQIfUnresolved is the §3.6 fix: any dispatch failure not
-// already accounted for by an invalid (permanently bad) token is a
+// already accounted for by an invalid (permanently bad) FID is a
 // candidate for later retry, so it's published to the DLQ rather than
 // silently dropped. unresolved intentionally covers both a partial
-// per-token retryable failure and a total request-level dispatch error —
+// per-FID retryable failure and a total request-level dispatch error —
 // see dispatch's own doc comment on why a total failure still deserves a
 // DLQ entry even when it happens to be non-retryable (e.g. a payload that
 // will always be too large): the DLQ's own retry-exhaustion path
@@ -411,7 +411,7 @@ func (s *notificationService) publishToDLQIfUnresolved(ctx context.Context, even
 	if s.dlqHandler == nil || !s.config.EnableDLQ {
 		return
 	}
-	unresolved := dispatchResult.FailureCount - len(dispatchResult.InvalidTokens)
+	unresolved := dispatchResult.FailureCount - len(dispatchResult.InvalidFIDs)
 	if unresolved <= 0 {
 		return
 	}
@@ -433,7 +433,7 @@ func joinDispatchErrors(errs []error) string {
 }
 
 // recordMetrics reports per-event/per-platform outcomes. See ServiceDeps.Metrics'
-// doc comment for why IncInvalidTokens is deliberately not called here.
+// doc comment for why IncInvalidFIDs is deliberately not called here.
 func (s *notificationService) recordMetrics(event Event, dispatchResult DispatchResult, dispatchDuration time.Duration) {
 	if s.metrics == nil || !s.config.EnableMetrics {
 		return
@@ -458,7 +458,7 @@ func (s *notificationService) recordMetrics(event Event, dispatchResult Dispatch
 // "sent" (matching graudit's own precedent of publishing on the durable
 // outcome, not requiring perfection); a dispatch with zero successes and
 // at least one failure counts as "failed". A dispatch with neither (e.g.
-// zero tokens resolved) publishes nothing — that's a skip, already
+// zero devices resolved) publishes nothing — that's a skip, already
 // reported via IncEventsSkipped, not a lifecycle event.
 func (s *notificationService) publishLifecycleEvent(ctx context.Context, event Event, dispatchResult DispatchResult) {
 	if !s.config.EnableEventBus {

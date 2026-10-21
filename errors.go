@@ -31,9 +31,15 @@ var (
 	ErrInvalidEventID = errors.New("grnoti: event id is required")
 
 	// ErrNoTargetSpecified indicates an Event has none of UserID,
-	// AnonymousID, or DeviceTokens set — there is no way to resolve who
+	// AnonymousID, or FIDs set — there is no way to resolve who
 	// should receive it.
-	ErrNoTargetSpecified = errors.New("grnoti: at least one of user id, anonymous id, or device tokens is required")
+	ErrNoTargetSpecified = errors.New("grnoti: at least one of user id, anonymous id, or FIDs is required")
+
+	// ErrInvalidFID indicates a Device.FID or an Event.FIDs entry is not a
+	// Firebase Installation ID (see validFID) — most often a legacy FCM
+	// registration token from a client still on the deprecated token APIs,
+	// which FCM would answer as unregistered on every send.
+	ErrInvalidFID = errors.New("grnoti: invalid firebase installation id (fid)")
 
 	// ErrInvalidEventType indicates Event.Type failed EventType.IsValid().
 	ErrInvalidEventType = errors.New("grnoti: invalid event type")
@@ -117,8 +123,8 @@ func (c FCMErrorCode) IsRetryable() bool {
 	}
 }
 
-// IsPermanent reports whether a failure of this class means the token
-// itself is dead and should be removed via TokenStore.MarkInvalid, rather
+// IsPermanent reports whether a failure of this class means the FID
+// itself is dead and should be removed via DeviceStore.MarkInvalid, rather
 // than retried.
 func (c FCMErrorCode) IsPermanent() bool {
 	switch c {
@@ -129,11 +135,11 @@ func (c FCMErrorCode) IsPermanent() bool {
 	}
 }
 
-// FCMError wraps a single FCM send failure for one token with its
+// FCMError wraps a single FCM send failure for one FID with its
 // classified FCMErrorCode.
 type FCMError struct {
 	Code    FCMErrorCode
-	Token   string
+	FID     string
 	Message string
 	Err     error
 }
@@ -154,6 +160,6 @@ func (e *FCMError) IsRetryable() bool { return e.Code.IsRetryable() }
 func (e *FCMError) IsPermanent() bool { return e.Code.IsPermanent() }
 
 // NewFCMError constructs an FCMError.
-func NewFCMError(code FCMErrorCode, token, message string, err error) *FCMError {
-	return &FCMError{Code: code, Token: token, Message: message, Err: err}
+func NewFCMError(code FCMErrorCode, fid, message string, err error) *FCMError {
+	return &FCMError{Code: code, FID: fid, Message: message, Err: err}
 }

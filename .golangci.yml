@@ -11,7 +11,7 @@ linters:
   settings:
     revive:
       rules:
-        # TokenStore, PreferencesStore, DLQHandler, PushDispatcher, Logger,
+        # DeviceStore, PreferencesStore, DLQHandler, PushDispatcher, Logger,
         # and grevents.Bus/grcache.Cache are fixed interface shapes — test
         # doubles and backend constructors legitimately don't need every
         # parameter, and dropping the name would make call sites harder to
