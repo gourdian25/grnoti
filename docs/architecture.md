@@ -15,7 +15,7 @@ backend (MongoDB, PostgreSQL, Redis, Kafka, FCM) lives in this one module,
 distinguished by a `<concern>.<backend>.go` file-naming convention:
 
 ```
-tokenstore.mongo.go       tokenstore.postgres.go
+devicestore.mongo.go       devicestore.postgres.go
 dlq.mongo.go               dlq.postgres.go
 preferences.postgres.go
 experimentstore.postgres.go
@@ -49,7 +49,7 @@ concrete implementations each:
 
 | Interface           | In-memory (`memory.go`) | Cache-backed (`cache.*.go`) | Mongo | Postgres | Other |
 |----------------------|:---:|:---:|:---:|:---:|---|
-| `TokenStore`          | ✓ | — | ✓ | ✓ | |
+| `DeviceStore`          | ✓ | — | ✓ | ✓ | |
 | `PreferencesStore`     | ✓ | ✓ (read-through) | — | ✓ | |
 | `DLQHandler`           | ✓ | — | ✓ | ✓ | |
 | `ExperimentStore`      | ✓ | — | — | ✓ | |
@@ -59,7 +59,7 @@ concrete implementations each:
 | `PushDispatcher`       | — | — | — | — | `fcmDispatcher` (the only real implementation; FCM is the notification backend) |
 | `EventConsumer`/`AnalyticsPublisher` | — | — | — | — | Kafka only (`consumer.kafka.go`/`producer.kafka.go`) |
 | `TemplateEngine`       | `defaultTemplateEngine` (in-process) | — | — | — | `localizedTemplateEngine` decorator (locale-aware, wraps another `TemplateEngine`) |
-| `TopicRouter`          | — | — | — | — | `eventTypeTopicRouter` / `staticTopicRouter` / `tokenOnlyRouter` — all pure in-process logic |
+| `TopicRouter`          | — | — | — | — | `eventTypeTopicRouter` / `staticTopicRouter` / `deviceOnlyRouter` — all pure in-process logic |
 | `CircuitBreaker`       | — | — | — | — | `standardCircuitBreaker` — the one implementation; `CircuitBreaker` is itself an exported interface, and both constructors (`NewCircuitBreaker`, `NewCircuitBreakerWithConfig`) return that interface type, not the concrete struct (see §3.2 for how it's wired into dispatch) |
 
 `NotificationService` (`service.go`) is the orchestrator that composes all
@@ -89,7 +89,7 @@ but straight into synchronous processing.
 ### 3.2 RateLimiter/CircuitBreaker are actually wired into dispatch
 
 `FCMDispatcherDeps.RateLimiter`/`CircuitBreaker`, when set, gate every
-outbound FCM batch/single-send (`sendBatch`, `SendToToken`, `SendToTopic`
+outbound FCM batch/single-send (`sendBatch`, `SendToDevice`, `SendToTopic`
 in `dispatcher.fcm.go`). The reference implementation built both
 components in full but never connected either to the actual dispatch
 path — they existed and were tested in isolation, but a real FCM outage
@@ -100,8 +100,8 @@ would never have tripped the breaker or been rate-limited.
 `dispatcher.fcm.go` always internally batches at `FCMMaxBatchSize` (FCM's
 own per-multicast-call limit) — this is not configurable and not
 optional. `service.go`'s `ServiceConfig.EnforceBatching`/
-`MaxTokensPerBatch` is a separate, optional, caller-controlled pre-split
-of a resolved token list into smaller `PushDispatcher.Send` calls before
+`MaxDevicesPerBatch` is a separate, optional, caller-controlled pre-split
+of a resolved device list into smaller `PushDispatcher.Send` calls before
 FCM's own batching ever sees them. The two are orthogonal: enabling the
 service-level one just means more, smaller calls into a dispatcher that
 still batches internally at its own fixed limit.
@@ -279,8 +279,39 @@ all — see [docs/postgres.md](postgres.md) for the current pattern and the
 full "why no auto-apply" reasoning. `applyPostgresSchema`/
 `grnotiSchemaLockKey` still exist, unexported, used only by grnoti's own
 test setup now (`ensureTestPostgresSchema` in
-`tokenstore.postgres_test.go`) — the advisory lock still matters there,
+`devicestore.postgres_test.go`) — the advisory lock still matters there,
 since multiple test files apply schema against the same database.
+
+### 3.13 FCM addressing: Firebase Installation IDs only
+
+FCM is moving from registration tokens to Firebase Installation IDs
+(FIDs): firebase-admin-go deprecates `messaging.Message.Token` and
+`MulticastMessage.Tokens` in favour of `Fid`/`Fids`, and the client SDKs
+replace `getToken()`/`onNewToken()` with `register()`/`onRegistered`
+(Android firebase-messaging 25.1.0+, Apple SDK 12.16.0+ behind an
+`Info.plist` flag, the Web JS SDK). grnoti addresses FCM by FID only, so
+the record is a `Device` keyed by `FID` (`devicestore.*.go`, table
+`grnoti_devices`, column `fid`), and `dispatcher.fcm.go` sends with
+`Fids`/`Fid` alone.
+
+Keeping registration tokens alongside was rejected. The SDK offers no
+non-deprecated way to send to one: `Fid` takes an installation ID, a
+different value, and Firebase's own integration test shows a non-FID sent
+there answered `UNREGISTERED` (Firebase documents only the reverse, `token`
+accepting an FID during the migration). Supporting tokens would have meant
+keeping the deprecated fields, with their lint suppressions, until Firebase
+removes them.
+
+That `UNREGISTERED` answer is also why `Device.Validate` exists. FCM's
+reply is classified permanent and the FID is marked invalid, so an app still
+on the token APIs would have every push fail and its devices silently
+pruned. Instead, every `DeviceStore.SaveDevice` and `Event.Validate` refuse
+anything that is not FID-shaped with `ErrInvalidFID`: `validFID` is the
+Firebase JS SDK's own `VALID_FID_PATTERN`, 22 URL-safe base64 characters
+whose first is `c`, `d`, `e` or `f` (the 0b0111 FID header). A registration
+token is far longer and never matches. The `fid` column keeps its generous
+width on purpose: the format check lives in Go alone, so a change to it
+never needs a schema migration in a consumer.
 
 ## 4. Testing philosophy
 
@@ -299,12 +330,12 @@ that code review alone did not — most notably:
   falsifying test run under `-race` with real concurrent goroutines that
   proves grnoti's own design doesn't reproduce it — the kind of guarantee
   a single-threaded review can't provide either way.
-- `eventTypeTopicRouter`/`tokenOnlyRouter`'s token-resolution fallback
-  silently dropped anonymous and direct-token events when topic routing
+- `eventTypeTopicRouter`/`deviceOnlyRouter`'s device-resolution fallback
+  silently dropped anonymous and direct-FID events when topic routing
   was enabled — invisible until an actual end-to-end pipeline test wired
-  a real `TopicRouter` against a real `TokenStore`.
+  a real `TopicRouter` against a real `DeviceStore`.
 - `sendBatchWithRetry` (`dispatcher.fcm.go`) only retried on a partial
-  per-token failure, silently abandoning a *total* request-level failure
+  per-FID failure, silently abandoning a *total* request-level failure
   after one attempt — only visible once a fake client was made to return
   a real total-failure error across a real retry loop.
 

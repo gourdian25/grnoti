@@ -48,7 +48,7 @@ release:
     ## {{ .ProjectName }} {{ .Version }}
 
     Push-notification service library for the gourdian ecosystem: FCM
-    dispatch, idempotency, device-token management, dead-letter retry,
+    dispatch by Firebase Installation ID, idempotency, dead-letter retry,
     circuit breaking, deterministic A/B experiment assignment, localization,
     and topic routing behind a small set of storage-agnostic interfaces.
 

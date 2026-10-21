@@ -3,6 +3,7 @@
 package grnoti
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -44,12 +45,20 @@ func TestEvent_Validate(t *testing.T) {
 		}
 	})
 
-	t.Run("DeviceTokensIsAValidTarget", func(t *testing.T) {
+	t.Run("FIDsAreAValidTarget", func(t *testing.T) {
 		e := base
 		e.UserID = ""
-		e.DeviceTokens = []string{"tok-1"}
+		e.FIDs = []string{testFID("fid-1")}
 		if err := e.Validate(); err != nil {
-			t.Fatalf("Validate() = %v, want nil (DeviceTokens alone is a valid target)", err)
+			t.Fatalf("Validate() = %v, want nil (FIDs alone is a valid target)", err)
+		}
+	})
+
+	t.Run("MalformedFID", func(t *testing.T) {
+		e := base
+		e.FIDs = []string{testFID("fid-1"), "not-an-fid"}
+		if err := e.Validate(); err != ErrInvalidFID {
+			t.Fatalf("Validate() = %v, want ErrInvalidFID", err)
 		}
 	})
 
@@ -81,9 +90,50 @@ func TestEvent_TargetHelpers(t *testing.T) {
 		t.Fatalf("anonymous event helpers wrong: %+v", anon)
 	}
 
-	direct := Event{DeviceTokens: []string{"t1"}}
-	if !direct.HasDirectTokens() || direct.GetTargetID() != "direct" {
-		t.Fatalf("direct-token event helpers wrong: %+v", direct)
+	direct := Event{FIDs: []string{"t1"}}
+	if !direct.HasDirectFIDs() || direct.GetTargetID() != "direct" {
+		t.Fatalf("direct-FID event helpers wrong: %+v", direct)
+	}
+}
+
+// legacyRegistrationToken has the shape of an FCM registration token as the
+// deprecated client token APIs hand one out: an installation ID, a colon
+// and a long APA91b... credential.
+const legacyRegistrationToken = "dIsVQ2QVRT-TW7L6VfeAMh:APA91bHPRgkF3JUikC4ENAHEeMrd41Zxv3hVZjC9KtT8OvPVGJ-hQMRKRrZuJAEcl7B338qju59zJMknoScH12ZtE6Gg5NXsvjUsaJvL8CGLZ0zlBumbzCEWVaN7Ma0V3ssq6tMcbe3U"
+
+func TestValidFID(t *testing.T) {
+	tests := []struct {
+		name string
+		fid  string
+		want bool
+	}{
+		{"Real", "dIsVQ2QVRT-TW7L6VfeAMh", true},
+		{"EveryHeaderCharacter", "c" + strings.Repeat("A", 21), true},
+		{"URLSafeSymbols", "f" + strings.Repeat("_", 10) + strings.Repeat("-", 11), true},
+		{"Empty", "", false},
+		{"LegacyRegistrationToken", legacyRegistrationToken, false},
+		{"WrongHeader", "a" + strings.Repeat("A", 21), false},
+		{"TooShort", "c" + strings.Repeat("A", 20), false},
+		{"TooLong", "c" + strings.Repeat("A", 22), false},
+		{"StandardBase64Symbol", "c" + strings.Repeat("A", 20) + "+", false},
+		{"Padding", "c" + strings.Repeat("A", 20) + "=", false},
+		{"TrailingNewline", "c" + strings.Repeat("A", 21) + "\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := validFID(tt.fid); got != tt.want {
+				t.Fatalf("validFID(%q) = %v, want %v", tt.fid, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDevice_Validate(t *testing.T) {
+	if err := (Device{FID: "dIsVQ2QVRT-TW7L6VfeAMh"}).Validate(); err != nil {
+		t.Fatalf("Validate(valid FID) = %v, want nil", err)
+	}
+	if err := (Device{FID: legacyRegistrationToken}).Validate(); err != ErrInvalidFID {
+		t.Fatalf("Validate(registration token) = %v, want ErrInvalidFID", err)
 	}
 }
 
@@ -126,8 +176,8 @@ func TestDefaultServiceConfig(t *testing.T) {
 	if cfg.IdempotencyTTL != 24*time.Hour {
 		t.Fatalf("DefaultServiceConfig().IdempotencyTTL = %v, want 24h", cfg.IdempotencyTTL)
 	}
-	if cfg.MaxTokensPerBatch != 500 {
-		t.Fatalf("DefaultServiceConfig().MaxTokensPerBatch = %d, want 500", cfg.MaxTokensPerBatch)
+	if cfg.MaxDevicesPerBatch != 500 {
+		t.Fatalf("DefaultServiceConfig().MaxDevicesPerBatch = %d, want 500", cfg.MaxDevicesPerBatch)
 	}
 	if !cfg.EnableMetrics {
 		t.Fatal("DefaultServiceConfig().EnableMetrics = false, want true")

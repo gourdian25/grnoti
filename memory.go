@@ -10,33 +10,33 @@ import (
 	"time"
 )
 
-// memoryTokenStore is an in-memory TokenStore for tests and single-instance
+// memoryDeviceStore is an in-memory DeviceStore for tests and single-instance
 // development — not for production use (no persistence across restarts).
-type memoryTokenStore struct {
-	mu     sync.RWMutex
-	tokens map[string]DeviceToken // key: token string
+type memoryDeviceStore struct {
+	mu      sync.RWMutex
+	devices map[string]Device // key: Device.FID
 }
 
-var _ TokenStore = (*memoryTokenStore)(nil)
+var _ DeviceStore = (*memoryDeviceStore)(nil)
 
-// NewMemoryTokenStore constructs an in-memory TokenStore.
-func NewMemoryTokenStore() TokenStore {
-	return &memoryTokenStore{tokens: make(map[string]DeviceToken)}
+// NewMemoryDeviceStore constructs an in-memory DeviceStore.
+func NewMemoryDeviceStore() DeviceStore {
+	return &memoryDeviceStore{devices: make(map[string]Device)}
 }
 
-func (s *memoryTokenStore) GetActiveTokens(_ context.Context, userID string) ([]DeviceToken, error) {
+func (s *memoryDeviceStore) GetActiveDevices(_ context.Context, userID string) ([]Device, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var out []DeviceToken
-	for _, t := range s.tokens {
-		if t.UserID == userID && t.IsActive {
-			out = append(out, t)
+	var out []Device
+	for _, dev := range s.devices {
+		if dev.UserID == userID && dev.IsActive {
+			out = append(out, dev)
 		}
 	}
 	return out, nil
 }
 
-func (s *memoryTokenStore) GetActiveTokensBatch(_ context.Context, userIDs []string) (map[string][]DeviceToken, error) {
+func (s *memoryDeviceStore) GetActiveDevicesBatch(_ context.Context, userIDs []string) (map[string][]Device, error) {
 	want := make(map[string]struct{}, len(userIDs))
 	for _, id := range userIDs {
 		want[id] = struct{}{}
@@ -44,64 +44,67 @@ func (s *memoryTokenStore) GetActiveTokensBatch(_ context.Context, userIDs []str
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make(map[string][]DeviceToken)
-	for _, t := range s.tokens {
-		if !t.IsActive {
+	out := make(map[string][]Device)
+	for _, dev := range s.devices {
+		if !dev.IsActive {
 			continue
 		}
-		if _, ok := want[t.UserID]; ok {
-			out[t.UserID] = append(out[t.UserID], t)
+		if _, ok := want[dev.UserID]; ok {
+			out[dev.UserID] = append(out[dev.UserID], dev)
 		}
 	}
 	return out, nil
 }
 
-func (s *memoryTokenStore) GetActiveTokensByAnonymousID(_ context.Context, anonymousID string) ([]DeviceToken, error) {
+func (s *memoryDeviceStore) GetActiveDevicesByAnonymousID(_ context.Context, anonymousID string) ([]Device, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var out []DeviceToken
-	for _, t := range s.tokens {
-		if t.AnonymousID == anonymousID && t.IsActive {
-			out = append(out, t)
+	var out []Device
+	for _, dev := range s.devices {
+		if dev.AnonymousID == anonymousID && dev.IsActive {
+			out = append(out, dev)
 		}
 	}
 	return out, nil
 }
 
-func (s *memoryTokenStore) MarkInvalid(_ context.Context, token string) error {
+func (s *memoryDeviceStore) MarkInvalid(_ context.Context, fid string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if t, ok := s.tokens[token]; ok {
-		t.IsActive = false
-		t.UpdatedAt = time.Now().UTC()
-		s.tokens[token] = t
+	if dev, ok := s.devices[fid]; ok {
+		dev.IsActive = false
+		dev.UpdatedAt = time.Now().UTC()
+		s.devices[fid] = dev
 	}
 	return nil
 }
 
-func (s *memoryTokenStore) SaveToken(_ context.Context, token DeviceToken) error {
+func (s *memoryDeviceStore) SaveDevice(_ context.Context, device Device) error {
+	if err := device.Validate(); err != nil {
+		return err
+	}
 	now := time.Now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if existing, ok := s.tokens[token.Token]; ok {
-		token.CreatedAt = existing.CreatedAt
+	if existing, ok := s.devices[device.FID]; ok {
+		device.CreatedAt = existing.CreatedAt
 	} else {
-		token.CreatedAt = now
+		device.CreatedAt = now
 	}
-	token.IsActive = true
-	token.UpdatedAt = now
-	s.tokens[token.Token] = token
+	device.IsActive = true
+	device.UpdatedAt = now
+	s.devices[device.FID] = device
 	return nil
 }
 
-func (s *memoryTokenStore) DeleteToken(_ context.Context, token string) error {
+func (s *memoryDeviceStore) DeleteDevice(_ context.Context, fid string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.tokens, token)
+	delete(s.devices, fid)
 	return nil
 }
 
-func (s *memoryTokenStore) Close() error { return nil }
+func (s *memoryDeviceStore) Close() error { return nil }
 
 // memoryPreferencesStore is an in-memory PreferencesStore. Unlike the
 // reference implementation's InMemoryPreferencesStore — whose map was

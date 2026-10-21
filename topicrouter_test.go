@@ -8,46 +8,46 @@ import (
 	"testing"
 )
 
-type stubTokenStore struct {
-	tokens []DeviceToken
-	err    error
+type stubDeviceStore struct {
+	devices []Device
+	err     error
 
 	// markInvalidErr, if set, is returned by MarkInvalid instead of nil —
 	// used to exercise callers' handling of a MarkInvalid failure (e.g.
-	// service.go's markInvalidTokens, which logs and continues).
+	// service.go's markInvalidFIDs, which logs and continues).
 	markInvalidErr error
 }
 
-func (s *stubTokenStore) GetActiveTokens(context.Context, string) ([]DeviceToken, error) {
-	return s.tokens, s.err
+func (s *stubDeviceStore) GetActiveDevices(context.Context, string) ([]Device, error) {
+	return s.devices, s.err
 }
-func (s *stubTokenStore) GetActiveTokensBatch(context.Context, []string) (map[string][]DeviceToken, error) {
+func (s *stubDeviceStore) GetActiveDevicesBatch(context.Context, []string) (map[string][]Device, error) {
 	return nil, nil
 }
-func (s *stubTokenStore) GetActiveTokensByAnonymousID(context.Context, string) ([]DeviceToken, error) {
-	return s.tokens, s.err
+func (s *stubDeviceStore) GetActiveDevicesByAnonymousID(context.Context, string) ([]Device, error) {
+	return s.devices, s.err
 }
-func (s *stubTokenStore) MarkInvalid(context.Context, string) error    { return s.markInvalidErr }
-func (s *stubTokenStore) SaveToken(context.Context, DeviceToken) error { return nil }
-func (s *stubTokenStore) DeleteToken(context.Context, string) error    { return nil }
-func (s *stubTokenStore) Close() error                                 { return nil }
+func (s *stubDeviceStore) MarkInvalid(context.Context, string) error  { return s.markInvalidErr }
+func (s *stubDeviceStore) SaveDevice(context.Context, Device) error   { return nil }
+func (s *stubDeviceStore) DeleteDevice(context.Context, string) error { return nil }
+func (s *stubDeviceStore) Close() error                               { return nil }
 
-func TestTokenTarget_GetTopicName_AlwaysEmpty(t *testing.T) {
-	target := TokenTarget{Tokens: []DeviceToken{{Token: "t1"}}}
+func TestDeviceTarget_GetTopicName_AlwaysEmpty(t *testing.T) {
+	target := DeviceTarget{Devices: []Device{{FID: "t1"}}}
 	if target.GetTopicName() != "" {
-		t.Fatalf("TokenTarget.GetTopicName() = %q, want empty (a token target has no topic)", target.GetTopicName())
+		t.Fatalf("DeviceTarget.GetTopicName() = %q, want empty (a device target has no topic)", target.GetTopicName())
 	}
 }
 
-func TestTopicTarget_GetTokens_AlwaysNil(t *testing.T) {
+func TestTopicTarget_GetDevices_AlwaysNil(t *testing.T) {
 	target := TopicTarget{Topic: "some-topic"}
-	if got := target.GetTokens(); got != nil {
-		t.Fatalf("TopicTarget.GetTokens() = %v, want nil (a topic target has no tokens)", got)
+	if got := target.GetDevices(); got != nil {
+		t.Fatalf("TopicTarget.GetDevices() = %v, want nil (a topic target has no devices)", got)
 	}
 }
 
 func TestEventTypeTopicRouter_PayloadOverrideWins(t *testing.T) {
-	router := NewEventTypeTopicRouter(map[EventType]string{EventTypeSystemAlert: "alerts-topic"}, &stubTokenStore{}, nil)
+	router := NewEventTypeTopicRouter(map[EventType]string{EventTypeSystemAlert: "alerts-topic"}, &stubDeviceStore{}, nil)
 	target, err := router.ResolveTarget(context.Background(), Event{
 		Type:    EventTypeSystemAlert,
 		Payload: map[string]string{"topic": "override-topic"},
@@ -61,7 +61,7 @@ func TestEventTypeTopicRouter_PayloadOverrideWins(t *testing.T) {
 }
 
 func TestEventTypeTopicRouter_TypeMapping(t *testing.T) {
-	router := NewEventTypeTopicRouter(map[EventType]string{EventTypeSystemAlert: "alerts-topic"}, &stubTokenStore{}, nil)
+	router := NewEventTypeTopicRouter(map[EventType]string{EventTypeSystemAlert: "alerts-topic"}, &stubDeviceStore{}, nil)
 	target, err := router.ResolveTarget(context.Background(), Event{Type: EventTypeSystemAlert})
 	if err != nil {
 		t.Fatalf("ResolveTarget: %v", err)
@@ -71,15 +71,15 @@ func TestEventTypeTopicRouter_TypeMapping(t *testing.T) {
 	}
 }
 
-func TestEventTypeTopicRouter_FallsBackToTokens(t *testing.T) {
-	store := &stubTokenStore{tokens: []DeviceToken{{Token: "t1"}}}
+func TestEventTypeTopicRouter_FallsBackToDevices(t *testing.T) {
+	store := &stubDeviceStore{devices: []Device{{FID: "t1"}}}
 	router := NewEventTypeTopicRouter(nil, store, nil)
 	target, err := router.ResolveTarget(context.Background(), Event{UserID: "u1", Type: EventTypeSystemAlert})
 	if err != nil {
 		t.Fatalf("ResolveTarget: %v", err)
 	}
-	if target.IsTopicBased() || len(target.GetTokens()) != 1 {
-		t.Fatalf("ResolveTarget() = %+v, want token-based target with 1 token", target)
+	if target.IsTopicBased() || len(target.GetDevices()) != 1 {
+		t.Fatalf("ResolveTarget() = %+v, want device-based target with 1 device", target)
 	}
 }
 
@@ -91,75 +91,75 @@ func TestStaticTopicRouter(t *testing.T) {
 	}
 }
 
-func TestTokenOnlyRouter(t *testing.T) {
-	store := &stubTokenStore{tokens: []DeviceToken{{Token: "t1"}, {Token: "t2"}}}
-	router := NewTokenOnlyRouter(store)
+func TestDeviceOnlyRouter(t *testing.T) {
+	store := &stubDeviceStore{devices: []Device{{FID: "t1"}, {FID: "t2"}}}
+	router := NewDeviceOnlyRouter(store)
 	target, err := router.ResolveTarget(context.Background(), Event{UserID: "u1", Type: EventTypeSystemAlert, Payload: map[string]string{"topic": "ignored"}})
 	if err != nil {
 		t.Fatalf("ResolveTarget: %v", err)
 	}
-	if target.IsTopicBased() || len(target.GetTokens()) != 2 {
-		t.Fatalf("ResolveTarget() = %+v, want token-based target ignoring any topic payload", target)
+	if target.IsTopicBased() || len(target.GetDevices()) != 2 {
+		t.Fatalf("ResolveTarget() = %+v, want device-based target ignoring any topic payload", target)
 	}
 }
 
-// TestEventTypeTopicRouter_FallsBackToTokens_AnonymousEvent is the
+// TestEventTypeTopicRouter_FallsBackToDevices_AnonymousEvent is the
 // regression test for a real gap found while wiring Stage 12: the fallback
-// branch originally called GetActiveTokens(ctx, event.UserID)
+// branch originally called GetActiveDevices(ctx, event.UserID)
 // unconditionally, so an anonymous event (empty UserID) silently resolved
-// to zero tokens instead of using GetActiveTokensByAnonymousID.
-func TestEventTypeTopicRouter_FallsBackToTokens_AnonymousEvent(t *testing.T) {
-	store := &stubTokenStore{tokens: []DeviceToken{{Token: "t1"}}}
+// to zero devices instead of using GetActiveDevicesByAnonymousID.
+func TestEventTypeTopicRouter_FallsBackToDevices_AnonymousEvent(t *testing.T) {
+	store := &stubDeviceStore{devices: []Device{{FID: "t1"}}}
 	router := NewEventTypeTopicRouter(nil, store, nil)
 	target, err := router.ResolveTarget(context.Background(), Event{AnonymousID: "a1", Type: EventTypeSystemAlert})
 	if err != nil {
 		t.Fatalf("ResolveTarget: %v", err)
 	}
-	if target.IsTopicBased() || len(target.GetTokens()) != 1 {
-		t.Fatalf("ResolveTarget() = %+v, want token-based target with 1 token for an anonymous event", target)
+	if target.IsTopicBased() || len(target.GetDevices()) != 1 {
+		t.Fatalf("ResolveTarget() = %+v, want device-based target with 1 device for an anonymous event", target)
 	}
 }
 
-// TestEventTypeTopicRouter_FallsBackToTokens_DirectTokens is the same
-// regression, for an event carrying direct device tokens with no
+// TestEventTypeTopicRouter_FallsBackToDevices_DirectFIDs is the same
+// regression, for an event carrying direct FIDs with no
 // UserID/AnonymousID at all.
-func TestEventTypeTopicRouter_FallsBackToTokens_DirectTokens(t *testing.T) {
-	router := NewEventTypeTopicRouter(nil, &stubTokenStore{}, nil)
-	target, err := router.ResolveTarget(context.Background(), Event{DeviceTokens: []string{"direct-1", "direct-2"}, Type: EventTypeSystemAlert})
+func TestEventTypeTopicRouter_FallsBackToDevices_DirectFIDs(t *testing.T) {
+	router := NewEventTypeTopicRouter(nil, &stubDeviceStore{}, nil)
+	target, err := router.ResolveTarget(context.Background(), Event{FIDs: []string{"direct-1", "direct-2"}, Type: EventTypeSystemAlert})
 	if err != nil {
 		t.Fatalf("ResolveTarget: %v", err)
 	}
-	if target.IsTopicBased() || len(target.GetTokens()) != 2 {
-		t.Fatalf("ResolveTarget() = %+v, want token-based target with 2 direct tokens", target)
+	if target.IsTopicBased() || len(target.GetDevices()) != 2 {
+		t.Fatalf("ResolveTarget() = %+v, want device-based target with 2 direct FIDs", target)
 	}
 }
 
-func TestEventTypeTopicRouter_TokenStoreError(t *testing.T) {
-	store := &stubTokenStore{err: errors.New("token store boom")}
+func TestEventTypeTopicRouter_DeviceStoreError(t *testing.T) {
+	store := &stubDeviceStore{err: errors.New("device store boom")}
 	router := NewEventTypeTopicRouter(nil, store, nil)
 	_, err := router.ResolveTarget(context.Background(), Event{UserID: "u1", Type: EventTypeSystemAlert})
 	if err == nil {
-		t.Fatal("ResolveTarget with a failing TokenStore = nil error, want non-nil")
+		t.Fatal("ResolveTarget with a failing DeviceStore = nil error, want non-nil")
 	}
 }
 
-func TestTokenOnlyRouter_TokenStoreError(t *testing.T) {
-	store := &stubTokenStore{err: errors.New("token store boom")}
-	router := NewTokenOnlyRouter(store)
+func TestDeviceOnlyRouter_DeviceStoreError(t *testing.T) {
+	store := &stubDeviceStore{err: errors.New("device store boom")}
+	router := NewDeviceOnlyRouter(store)
 	_, err := router.ResolveTarget(context.Background(), Event{UserID: "u1", Type: EventTypeSystemAlert})
 	if err == nil {
-		t.Fatal("ResolveTarget with a failing TokenStore = nil error, want non-nil")
+		t.Fatal("ResolveTarget with a failing DeviceStore = nil error, want non-nil")
 	}
 }
 
-func TestTokenOnlyRouter_AnonymousEvent(t *testing.T) {
-	store := &stubTokenStore{tokens: []DeviceToken{{Token: "t1"}}}
-	router := NewTokenOnlyRouter(store)
+func TestDeviceOnlyRouter_AnonymousEvent(t *testing.T) {
+	store := &stubDeviceStore{devices: []Device{{FID: "t1"}}}
+	router := NewDeviceOnlyRouter(store)
 	target, err := router.ResolveTarget(context.Background(), Event{AnonymousID: "a1", Type: EventTypeSystemAlert})
 	if err != nil {
 		t.Fatalf("ResolveTarget: %v", err)
 	}
-	if target.IsTopicBased() || len(target.GetTokens()) != 1 {
-		t.Fatalf("ResolveTarget() = %+v, want token-based target with 1 token for an anonymous event", target)
+	if target.IsTopicBased() || len(target.GetDevices()) != 1 {
+		t.Fatalf("ResolveTarget() = %+v, want device-based target with 1 device for an anonymous event", target)
 	}
 }

@@ -7,17 +7,16 @@ import (
 	"fmt"
 )
 
-// TokenTarget is a NotificationTarget resolving to a fixed set of device
-// tokens.
-type TokenTarget struct {
-	Tokens []DeviceToken
+// DeviceTarget is a NotificationTarget resolving to a fixed set of devices.
+type DeviceTarget struct {
+	Devices []Device
 }
 
-var _ NotificationTarget = TokenTarget{}
+var _ NotificationTarget = DeviceTarget{}
 
-func (t TokenTarget) IsTopicBased() bool       { return false }
-func (t TokenTarget) GetTopicName() string     { return "" }
-func (t TokenTarget) GetTokens() []DeviceToken { return t.Tokens }
+func (t DeviceTarget) IsTopicBased() bool   { return false }
+func (t DeviceTarget) GetTopicName() string { return "" }
+func (t DeviceTarget) GetDevices() []Device { return t.Devices }
 
 // TopicTarget is a NotificationTarget resolving to an FCM topic.
 type TopicTarget struct {
@@ -26,34 +25,34 @@ type TopicTarget struct {
 
 var _ NotificationTarget = TopicTarget{}
 
-func (t TopicTarget) IsTopicBased() bool       { return true }
-func (t TopicTarget) GetTopicName() string     { return t.Topic }
-func (t TopicTarget) GetTokens() []DeviceToken { return nil }
+func (t TopicTarget) IsTopicBased() bool   { return true }
+func (t TopicTarget) GetTopicName() string { return t.Topic }
+func (t TopicTarget) GetDevices() []Device { return nil }
 
-// resolveTokensForEvent resolves event's recipient device tokens: direct
-// tokens embedded in the event take precedence (matching dispatcher.fcm.go's
+// resolveDevicesForEvent resolves event's recipient devices: direct
+// FIDs embedded in the event take precedence (matching dispatcher.fcm.go's
 // own "default to Android for an unset platform" convention), then an
-// authenticated user's tokens via tokenStore,
+// authenticated user's devices via deviceStore,
 // then an anonymous visitor's. Shared by NotificationService's own
-// resolution and every TopicRouter's token-fallback branch below — a fix
+// resolution and every TopicRouter's device-fallback branch below — a fix
 // found while wiring Stage 12's full pipeline: eventTypeTopicRouter and
-// tokenOnlyRouter originally called tokenStore.GetActiveTokens(ctx,
+// deviceOnlyRouter originally called deviceStore.GetActiveDevices(ctx,
 // event.UserID) unconditionally in their fallback branch, which silently
-// resolved to zero tokens for an anonymous or direct-token event (an empty
+// resolved to zero devices for an anonymous or direct-FID event (an empty
 // UserID matches nothing) instead of actually resolving them. See
 // docs/plan/grnoti-plan.md's Stage 12 implementation log.
-func resolveTokensForEvent(ctx context.Context, event Event, tokenStore TokenStore) ([]DeviceToken, error) {
+func resolveDevicesForEvent(ctx context.Context, event Event, deviceStore DeviceStore) ([]Device, error) {
 	switch {
-	case event.HasDirectTokens():
-		tokens := make([]DeviceToken, len(event.DeviceTokens))
-		for i, tok := range event.DeviceTokens {
-			tokens[i] = DeviceToken{Token: tok, Platform: PlatformAndroid, IsActive: true}
+	case event.HasDirectFIDs():
+		devices := make([]Device, len(event.FIDs))
+		for i, fid := range event.FIDs {
+			devices[i] = Device{FID: fid, Platform: PlatformAndroid, IsActive: true}
 		}
-		return tokens, nil
+		return devices, nil
 	case event.IsAuthenticated():
-		return tokenStore.GetActiveTokens(ctx, event.UserID)
+		return deviceStore.GetActiveDevices(ctx, event.UserID)
 	case event.IsAnonymous():
-		return tokenStore.GetActiveTokensByAnonymousID(ctx, event.AnonymousID)
+		return deviceStore.GetActiveDevicesByAnonymousID(ctx, event.AnonymousID)
 	default:
 		return nil, nil // unreachable after Event.Validate(), which requires one of the above
 	}
@@ -61,11 +60,11 @@ func resolveTokensForEvent(ctx context.Context, event Event, tokenStore TokenSto
 
 // eventTypeTopicRouter is the primary TopicRouter: resolves in priority
 // order — an explicit event.Payload["topic"] override, then a static
-// event-type-to-topic mapping, then falls back to per-user device-token
-// routing via TokenStore.
+// event-type-to-topic mapping, then falls back to per-user device
+// routing via DeviceStore.
 type eventTypeTopicRouter struct {
 	topicMappings map[EventType]string
-	tokenStore    TokenStore
+	deviceStore   DeviceStore
 	logger        Logger
 }
 
@@ -75,14 +74,14 @@ var _ TopicRouter = (*eventTypeTopicRouter)(nil)
 //
 // Parameters:
 //   - topicMappings: map[EventType]string — may be nil
-//   - tokenStore: TokenStore — used as the fallback when neither a payload
+//   - deviceStore: DeviceStore — used as the fallback when neither a payload
 //     override nor a type mapping applies
 //   - logger: Logger — may be nil
-func NewEventTypeTopicRouter(topicMappings map[EventType]string, tokenStore TokenStore, logger Logger) TopicRouter {
+func NewEventTypeTopicRouter(topicMappings map[EventType]string, deviceStore DeviceStore, logger Logger) TopicRouter {
 	if topicMappings == nil {
 		topicMappings = make(map[EventType]string)
 	}
-	return &eventTypeTopicRouter{topicMappings: topicMappings, tokenStore: tokenStore, logger: OrNop(logger)}
+	return &eventTypeTopicRouter{topicMappings: topicMappings, deviceStore: deviceStore, logger: OrNop(logger)}
 }
 
 func (r *eventTypeTopicRouter) ResolveTarget(ctx context.Context, event Event) (NotificationTarget, error) {
@@ -96,12 +95,12 @@ func (r *eventTypeTopicRouter) ResolveTarget(ctx context.Context, event Event) (
 		return TopicTarget{Topic: topic}, nil
 	}
 
-	r.logger.Debug("grnoti: routing event to per-recipient tokens", "event_id", event.EventID)
-	tokens, err := resolveTokensForEvent(ctx, event, r.tokenStore)
+	r.logger.Debug("grnoti: routing event to per-recipient devices", "event_id", event.EventID)
+	devices, err := resolveDevicesForEvent(ctx, event, r.deviceStore)
 	if err != nil {
-		return nil, fmt.Errorf("grnoti: failed to get tokens for event %s: %w", event.EventID, err)
+		return nil, fmt.Errorf("grnoti: failed to get devices for event %s: %w", event.EventID, err)
 	}
-	return TokenTarget{Tokens: tokens}, nil
+	return DeviceTarget{Devices: devices}, nil
 }
 
 type staticTopicRouter struct{ topic string }
@@ -116,20 +115,20 @@ func (r staticTopicRouter) ResolveTarget(context.Context, Event) (NotificationTa
 	return TopicTarget{Topic: r.topic}, nil
 }
 
-type tokenOnlyRouter struct{ tokenStore TokenStore }
+type deviceOnlyRouter struct{ deviceStore DeviceStore }
 
-var _ TopicRouter = tokenOnlyRouter{}
+var _ TopicRouter = deviceOnlyRouter{}
 
-// NewTokenOnlyRouter returns a TopicRouter that always routes via
-// TokenStore, disabling topic-based routing entirely.
-func NewTokenOnlyRouter(tokenStore TokenStore) TopicRouter {
-	return tokenOnlyRouter{tokenStore: tokenStore}
+// NewDeviceOnlyRouter returns a TopicRouter that always routes via
+// DeviceStore, disabling topic-based routing entirely.
+func NewDeviceOnlyRouter(deviceStore DeviceStore) TopicRouter {
+	return deviceOnlyRouter{deviceStore: deviceStore}
 }
 
-func (r tokenOnlyRouter) ResolveTarget(ctx context.Context, event Event) (NotificationTarget, error) {
-	tokens, err := resolveTokensForEvent(ctx, event, r.tokenStore)
+func (r deviceOnlyRouter) ResolveTarget(ctx context.Context, event Event) (NotificationTarget, error) {
+	devices, err := resolveDevicesForEvent(ctx, event, r.deviceStore)
 	if err != nil {
-		return nil, fmt.Errorf("grnoti: failed to get tokens for event %s: %w", event.EventID, err)
+		return nil, fmt.Errorf("grnoti: failed to get devices for event %s: %w", event.EventID, err)
 	}
-	return TokenTarget{Tokens: tokens}, nil
+	return DeviceTarget{Devices: devices}, nil
 }

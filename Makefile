@@ -33,7 +33,7 @@ help:
 	@echo "(Mongo/Postgres/Redis/Kafka/FCM) lives in this one module. Backend"
 	@echo "tests need real local services; see CLAUDE.md for docker run commands."
 	@echo "Scope a run to one backend while iterating, e.g.:"
-	@echo "  go test -run TestTokenStore_Contract/Memory ./..."
+	@echo "  go test -run TestDeviceStore_Contract/Memory ./..."
 
 test:
 	@echo "Running tests..."

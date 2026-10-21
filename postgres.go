@@ -67,7 +67,7 @@ var postgresSchemaSQL string
 // plain SQL file run in CI, whatever you already use) before constructing
 // any of grnoti's four Postgres-backed stores:
 //
-//   - grnoti_tokens      — NewPostgresTokenStore
+//   - grnoti_devices     — NewPostgresDeviceStore
 //   - grnoti_preferences — NewPostgresPreferencesStore
 //   - grnoti_experiments — NewPostgresExperimentStore
 //   - grnoti_dlq         — NewPostgresDLQHandler
@@ -145,7 +145,7 @@ type PostgresConfig struct {
 // already exist before this is called, applied through your own
 // project's migration tool. Calling this against a database where they
 // don't exist yet doesn't fail here — it fails on the first actual store
-// method call (SaveToken, GetPreferences, ClaimRetryableEvents, ...) with
+// method call (SaveDevice, GetPreferences, ClaimRetryableEvents, ...) with
 // a plain Postgres "relation does not exist" error.
 func connectPostgres(ctx context.Context, cfg PostgresConfig, component string) (*pgxpool.Pool, *postgresdb.Queries, bool, error) {
 	if (cfg.DSN == "") == (cfg.Pool == nil) {

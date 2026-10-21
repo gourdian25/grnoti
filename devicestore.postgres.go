@@ -1,4 +1,4 @@
-// File: tokenstore.postgres.go
+// File: devicestore.postgres.go
 
 package grnoti
 
@@ -15,15 +15,15 @@ import (
 	"github.com/gourdian25/grnoti/internal/postgresdb"
 )
 
-func tokenRowToDomain(r postgresdb.GrnotiToken) DeviceToken {
-	return DeviceToken{
-		Token: r.Token, Platform: Platform(r.Platform), UserID: r.UserID, AnonymousID: r.AnonymousID,
+func deviceRowToDomain(r postgresdb.GrnotiDevice) Device {
+	return Device{
+		FID: r.Fid, Platform: Platform(r.Platform), UserID: r.UserID, AnonymousID: r.AnonymousID,
 		DeviceID: r.DeviceID, AppVersion: r.AppVersion, IsActive: r.IsActive,
 		CreatedAt: pgTime(r.CreatedAt), UpdatedAt: pgTime(r.UpdatedAt),
 	}
 }
 
-type postgresTokenStore struct {
+type postgresDeviceStore struct {
 	pool     *pgxpool.Pool
 	queries  *postgresdb.Queries
 	logger   Logger
@@ -33,117 +33,120 @@ type postgresTokenStore struct {
 	closeOnce sync.Once
 }
 
-var _ TokenStore = (*postgresTokenStore)(nil)
+var _ DeviceStore = (*postgresDeviceStore)(nil)
 
-// NewPostgresTokenStore connects per cfg (pgx + sqlc-generated queries) —
-// the alternative to the primary MongoDB backend (tokenstore.mongo.go);
+// NewPostgresDeviceStore connects per cfg (pgx + sqlc-generated queries) —
+// the alternative to the primary MongoDB backend (devicestore.mongo.go);
 // see docs/plan/grnoti-plan.md §6.
-func NewPostgresTokenStore(cfg PostgresConfig) (TokenStore, error) {
-	pool, queries, ownsPool, err := connectPostgres(context.Background(), cfg, "TokenStore")
+func NewPostgresDeviceStore(cfg PostgresConfig) (DeviceStore, error) {
+	pool, queries, ownsPool, err := connectPostgres(context.Background(), cfg, "DeviceStore")
 	if err != nil {
 		return nil, err
 	}
 	logger := OrNop(cfg.Logger)
-	logger.Info("grnoti/postgres: token store connected")
-	return &postgresTokenStore{pool: pool, queries: queries, logger: logger, ownsPool: ownsPool}, nil
+	logger.Info("grnoti/postgres: device store connected")
+	return &postgresDeviceStore{pool: pool, queries: queries, logger: logger, ownsPool: ownsPool}, nil
 }
 
-func (s *postgresTokenStore) GetActiveTokens(ctx context.Context, userID string) ([]DeviceToken, error) {
+func (s *postgresDeviceStore) GetActiveDevices(ctx context.Context, userID string) ([]Device, error) {
 	if s.closed.Load() {
 		return nil, ErrClosed
 	}
-	rows, err := s.queries.GetActiveTokensByUserID(ctx, userID)
+	rows, err := s.queries.GetActiveDevicesByUserID(ctx, userID)
 	if err != nil {
-		return nil, fmt.Errorf("grnoti/postgres: get active tokens for %s: %w", userID, errors.Join(err, ErrBackendUnavailable))
+		return nil, fmt.Errorf("grnoti/postgres: get active devices for %s: %w", userID, errors.Join(err, ErrBackendUnavailable))
 	}
-	out := make([]DeviceToken, len(rows))
+	out := make([]Device, len(rows))
 	for i, r := range rows {
-		out[i] = tokenRowToDomain(r)
+		out[i] = deviceRowToDomain(r)
 	}
 	return out, nil
 }
 
-func (s *postgresTokenStore) GetActiveTokensBatch(ctx context.Context, userIDs []string) (map[string][]DeviceToken, error) {
+func (s *postgresDeviceStore) GetActiveDevicesBatch(ctx context.Context, userIDs []string) (map[string][]Device, error) {
 	if s.closed.Load() {
 		return nil, ErrClosed
 	}
-	rows, err := s.queries.GetActiveTokensByUserIDs(ctx, userIDs)
+	rows, err := s.queries.GetActiveDevicesByUserIDs(ctx, userIDs)
 	if err != nil {
-		return nil, fmt.Errorf("grnoti/postgres: get active tokens batch: %w", errors.Join(err, ErrBackendUnavailable))
+		return nil, fmt.Errorf("grnoti/postgres: get active devices batch: %w", errors.Join(err, ErrBackendUnavailable))
 	}
-	out := make(map[string][]DeviceToken)
+	out := make(map[string][]Device)
 	for _, r := range rows {
-		out[r.UserID] = append(out[r.UserID], tokenRowToDomain(r))
+		out[r.UserID] = append(out[r.UserID], deviceRowToDomain(r))
 	}
 	return out, nil
 }
 
-func (s *postgresTokenStore) GetActiveTokensByAnonymousID(ctx context.Context, anonymousID string) ([]DeviceToken, error) {
+func (s *postgresDeviceStore) GetActiveDevicesByAnonymousID(ctx context.Context, anonymousID string) ([]Device, error) {
 	if s.closed.Load() {
 		return nil, ErrClosed
 	}
-	rows, err := s.queries.GetActiveTokensByAnonymousID(ctx, anonymousID)
+	rows, err := s.queries.GetActiveDevicesByAnonymousID(ctx, anonymousID)
 	if err != nil {
-		return nil, fmt.Errorf("grnoti/postgres: get active tokens for anonymous %s: %w", anonymousID, errors.Join(err, ErrBackendUnavailable))
+		return nil, fmt.Errorf("grnoti/postgres: get active devices for anonymous %s: %w", anonymousID, errors.Join(err, ErrBackendUnavailable))
 	}
-	out := make([]DeviceToken, len(rows))
+	out := make([]Device, len(rows))
 	for i, r := range rows {
-		out[i] = tokenRowToDomain(r)
+		out[i] = deviceRowToDomain(r)
 	}
 	return out, nil
 }
 
-func (s *postgresTokenStore) MarkInvalid(ctx context.Context, token string) error {
+func (s *postgresDeviceStore) MarkInvalid(ctx context.Context, fid string) error {
 	if s.closed.Load() {
 		return ErrClosed
 	}
-	affected, err := s.queries.MarkTokenInvalid(ctx, postgresdb.MarkTokenInvalidParams{
-		Token: token, UpdatedAt: pgTimestamptz(time.Now().UTC()),
+	affected, err := s.queries.MarkDeviceInvalid(ctx, postgresdb.MarkDeviceInvalidParams{
+		Fid: fid, UpdatedAt: pgTimestamptz(time.Now().UTC()),
 	})
 	if err != nil {
-		return fmt.Errorf("grnoti/postgres: mark invalid %s: %w", token, errors.Join(err, ErrBackendUnavailable))
+		return fmt.Errorf("grnoti/postgres: mark invalid %s: %w", fid, errors.Join(err, ErrBackendUnavailable))
 	}
 	if affected == 0 {
-		s.logger.Debug("grnoti/postgres: MarkInvalid: token not found", "token", token)
+		s.logger.Debug("grnoti/postgres: MarkInvalid: fid not found", "fid", maskFID(fid))
 	}
 	return nil
 }
 
-func (s *postgresTokenStore) SaveToken(ctx context.Context, token DeviceToken) error {
+func (s *postgresDeviceStore) SaveDevice(ctx context.Context, device Device) error {
 	if s.closed.Load() {
 		return ErrClosed
 	}
-	err := s.queries.UpsertToken(ctx, postgresdb.UpsertTokenParams{
-		Token: token.Token, Platform: string(token.Platform), UserID: token.UserID, AnonymousID: token.AnonymousID,
-		DeviceID: token.DeviceID, AppVersion: token.AppVersion, CreatedAt: pgTimestamptz(time.Now().UTC()),
+	if err := device.Validate(); err != nil {
+		return err
+	}
+	err := s.queries.UpsertDevice(ctx, postgresdb.UpsertDeviceParams{
+		Fid: device.FID, Platform: string(device.Platform), UserID: device.UserID, AnonymousID: device.AnonymousID,
+		DeviceID: device.DeviceID, AppVersion: device.AppVersion, CreatedAt: pgTimestamptz(time.Now().UTC()),
 	})
 	if err != nil {
-		return fmt.Errorf("grnoti/postgres: save token: %w", errors.Join(err, ErrBackendUnavailable))
+		return fmt.Errorf("grnoti/postgres: save device: %w", errors.Join(err, ErrBackendUnavailable))
 	}
 	return nil
 }
 
-func (s *postgresTokenStore) DeleteToken(ctx context.Context, token string) error {
+func (s *postgresDeviceStore) DeleteDevice(ctx context.Context, fid string) error {
 	if s.closed.Load() {
 		return ErrClosed
 	}
-	affected, err := s.queries.DeleteToken(ctx, token)
+	affected, err := s.queries.DeleteDevice(ctx, fid)
 	if err != nil {
-		return fmt.Errorf("grnoti/postgres: delete token %s: %w", token, errors.Join(err, ErrBackendUnavailable))
+		return fmt.Errorf("grnoti/postgres: delete device %s: %w", fid, errors.Join(err, ErrBackendUnavailable))
 	}
 	if affected == 0 {
-		s.logger.Debug("grnoti/postgres: DeleteToken: token not found", "token", token)
+		s.logger.Debug("grnoti/postgres: DeleteDevice: fid not found", "fid", maskFID(fid))
 	}
 	return nil
 }
 
-func (s *postgresTokenStore) Close() error {
+func (s *postgresDeviceStore) Close() error {
 	s.closeOnce.Do(func() {
 		s.closed.Store(true)
 		if s.ownsPool {
 			s.pool.Close()
 		}
-		s.logger.Info("grnoti/postgres: token store closed")
+		s.logger.Info("grnoti/postgres: device store closed")
 	})
 	return nil
 }

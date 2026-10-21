@@ -1,4 +1,4 @@
-// File: contract_tokenstore_test.go
+// File: contract_devicestore_test.go
 
 package grnoti
 
@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// testTokenStoreContract is the shared behavioral contract every TokenStore
+// testDeviceStoreContract is the shared behavioral contract every DeviceStore
 // backend must satisfy identically, per gourdiantoken's own table-driven
 // cross-backend testing convention (see docs/plan/grnoti-plan.md §4, §7) —
 // grnoti's flat, no-subpackage layout means there's no import-cycle reason
@@ -17,47 +17,58 @@ import (
 // one) so a backend-unavailable skip inside it calls Skip on the actual
 // running subtest — calling an outer *testing.T's Skip/Fatal from inside a
 // nested t.Run's goroutine targets the wrong test's bookkeeping.
-func testTokenStoreContract(t *testing.T, newStore func(t *testing.T) TokenStore) {
+func testDeviceStoreContract(t *testing.T, newStore func(t *testing.T) DeviceStore) {
 	t.Helper()
 	ctx := context.Background()
 
-	t.Run("SaveThenGetActiveTokens", func(t *testing.T) {
+	t.Run("SaveThenGetActiveDevices", func(t *testing.T) {
 		store := newStore(t)
 		defer store.Close()
-		if err := store.SaveToken(ctx, DeviceToken{Token: "contract-t1", UserID: "contract-u1", Platform: PlatformAndroid}); err != nil {
-			t.Fatalf("SaveToken: %v", err)
+		if err := store.SaveDevice(ctx, Device{FID: testFID("contract-t1"), UserID: "contract-u1", Platform: PlatformAndroid}); err != nil {
+			t.Fatalf("SaveDevice: %v", err)
 		}
-		tokens, err := store.GetActiveTokens(ctx, "contract-u1")
+		devices, err := store.GetActiveDevices(ctx, "contract-u1")
 		if err != nil {
-			t.Fatalf("GetActiveTokens: %v", err)
+			t.Fatalf("GetActiveDevices: %v", err)
 		}
-		if len(tokens) != 1 || tokens[0].Token != "contract-t1" {
-			t.Fatalf("GetActiveTokens() = %v, want [contract-t1]", tokens)
+		if len(devices) != 1 || devices[0].FID != testFID("contract-t1") {
+			t.Fatalf("GetActiveDevices() = %v, want [contract-t1]", devices)
 		}
 	})
 
-	t.Run("GetActiveTokensForUnknownUserIsEmptyNotError", func(t *testing.T) {
+	t.Run("SaveRejectsInvalidFID", func(t *testing.T) {
 		store := newStore(t)
 		defer store.Close()
-		tokens, err := store.GetActiveTokens(ctx, "contract-never-seen")
-		if err != nil {
-			t.Fatalf("GetActiveTokens(unknown user) error = %v, want nil", err)
+		if err := store.SaveDevice(ctx, Device{FID: legacyRegistrationToken, UserID: "contract-u0"}); err != ErrInvalidFID {
+			t.Fatalf("SaveDevice(registration token) = %v, want ErrInvalidFID", err)
 		}
-		if len(tokens) != 0 {
-			t.Fatalf("GetActiveTokens(unknown user) = %v, want empty", tokens)
+		if devices, err := store.GetActiveDevices(ctx, "contract-u0"); err != nil || len(devices) != 0 {
+			t.Fatalf("GetActiveDevices after a refused SaveDevice = (%v, %v), want empty", devices, err)
+		}
+	})
+
+	t.Run("GetActiveDevicesForUnknownUserIsEmptyNotError", func(t *testing.T) {
+		store := newStore(t)
+		defer store.Close()
+		devices, err := store.GetActiveDevices(ctx, "contract-never-seen")
+		if err != nil {
+			t.Fatalf("GetActiveDevices(unknown user) error = %v, want nil", err)
+		}
+		if len(devices) != 0 {
+			t.Fatalf("GetActiveDevices(unknown user) = %v, want empty", devices)
 		}
 	})
 
 	t.Run("MarkInvalidRemovesFromActiveList", func(t *testing.T) {
 		store := newStore(t)
 		defer store.Close()
-		_ = store.SaveToken(ctx, DeviceToken{Token: "contract-t2", UserID: "contract-u2"})
-		if err := store.MarkInvalid(ctx, "contract-t2"); err != nil {
+		_ = store.SaveDevice(ctx, Device{FID: testFID("contract-t2"), UserID: "contract-u2"})
+		if err := store.MarkInvalid(ctx, testFID("contract-t2")); err != nil {
 			t.Fatalf("MarkInvalid: %v", err)
 		}
-		tokens, _ := store.GetActiveTokens(ctx, "contract-u2")
-		if len(tokens) != 0 {
-			t.Fatalf("GetActiveTokens after MarkInvalid = %v, want empty", tokens)
+		devices, _ := store.GetActiveDevices(ctx, "contract-u2")
+		if len(devices) != 0 {
+			t.Fatalf("GetActiveDevices after MarkInvalid = %v, want empty", devices)
 		}
 	})
 
@@ -69,55 +80,55 @@ func testTokenStoreContract(t *testing.T, newStore func(t *testing.T) TokenStore
 		}
 	})
 
-	t.Run("DeleteTokenRemovesIt", func(t *testing.T) {
+	t.Run("DeleteDeviceRemovesIt", func(t *testing.T) {
 		store := newStore(t)
 		defer store.Close()
-		_ = store.SaveToken(ctx, DeviceToken{Token: "contract-t3", UserID: "contract-u3"})
-		if err := store.DeleteToken(ctx, "contract-t3"); err != nil {
-			t.Fatalf("DeleteToken: %v", err)
+		_ = store.SaveDevice(ctx, Device{FID: testFID("contract-t3"), UserID: "contract-u3"})
+		if err := store.DeleteDevice(ctx, testFID("contract-t3")); err != nil {
+			t.Fatalf("DeleteDevice: %v", err)
 		}
-		tokens, _ := store.GetActiveTokens(ctx, "contract-u3")
-		if len(tokens) != 0 {
-			t.Fatalf("GetActiveTokens after DeleteToken = %v, want empty", tokens)
+		devices, _ := store.GetActiveDevices(ctx, "contract-u3")
+		if len(devices) != 0 {
+			t.Fatalf("GetActiveDevices after DeleteDevice = %v, want empty", devices)
 		}
-		if err := store.DeleteToken(ctx, "contract-t3"); err != nil {
-			t.Fatalf("DeleteToken(already deleted) error = %v, want nil", err)
+		if err := store.DeleteDevice(ctx, testFID("contract-t3")); err != nil {
+			t.Fatalf("DeleteDevice(already deleted) error = %v, want nil", err)
 		}
 	})
 
-	t.Run("GetActiveTokensByAnonymousID", func(t *testing.T) {
+	t.Run("GetActiveDevicesByAnonymousID", func(t *testing.T) {
 		store := newStore(t)
 		defer store.Close()
-		_ = store.SaveToken(ctx, DeviceToken{Token: "contract-t4", AnonymousID: "contract-a1"})
-		tokens, err := store.GetActiveTokensByAnonymousID(ctx, "contract-a1")
-		if err != nil || len(tokens) != 1 {
-			t.Fatalf("GetActiveTokensByAnonymousID() = (%v, %v), want 1 token", tokens, err)
+		_ = store.SaveDevice(ctx, Device{FID: testFID("contract-t4"), AnonymousID: "contract-a1"})
+		devices, err := store.GetActiveDevicesByAnonymousID(ctx, "contract-a1")
+		if err != nil || len(devices) != 1 {
+			t.Fatalf("GetActiveDevicesByAnonymousID() = (%v, %v), want 1 device", devices, err)
 		}
 	})
 
-	t.Run("GetActiveTokensBatchGroupsByUser", func(t *testing.T) {
+	t.Run("GetActiveDevicesBatchGroupsByUser", func(t *testing.T) {
 		store := newStore(t)
 		defer store.Close()
-		_ = store.SaveToken(ctx, DeviceToken{Token: "contract-t5", UserID: "contract-u5"})
-		_ = store.SaveToken(ctx, DeviceToken{Token: "contract-t6", UserID: "contract-u6"})
-		out, err := store.GetActiveTokensBatch(ctx, []string{"contract-u5", "contract-u6", "contract-u-missing"})
+		_ = store.SaveDevice(ctx, Device{FID: testFID("contract-t5"), UserID: "contract-u5"})
+		_ = store.SaveDevice(ctx, Device{FID: testFID("contract-t6"), UserID: "contract-u6"})
+		out, err := store.GetActiveDevicesBatch(ctx, []string{"contract-u5", "contract-u6", "contract-u-missing"})
 		if err != nil {
-			t.Fatalf("GetActiveTokensBatch: %v", err)
+			t.Fatalf("GetActiveDevicesBatch: %v", err)
 		}
 		if len(out) != 2 {
-			t.Fatalf("GetActiveTokensBatch() = %v, want exactly 2 users present", out)
+			t.Fatalf("GetActiveDevicesBatch() = %v, want exactly 2 users present", out)
 		}
 	})
 }
 
-func TestTokenStore_Contract(t *testing.T) {
+func TestDeviceStore_Contract(t *testing.T) {
 	t.Run("Memory", func(t *testing.T) {
-		testTokenStoreContract(t, func(t *testing.T) TokenStore { return NewMemoryTokenStore() })
+		testDeviceStoreContract(t, func(t *testing.T) DeviceStore { return NewMemoryDeviceStore() })
 	})
 	t.Run("Mongo", func(t *testing.T) {
-		testTokenStoreContract(t, func(t *testing.T) TokenStore {
+		testDeviceStoreContract(t, func(t *testing.T) DeviceStore {
 			collection := contractCollectionName(t)
-			store, err := NewMongoTokenStore(MongoTokenStoreConfig{
+			store, err := NewMongoDeviceStore(MongoDeviceStoreConfig{
 				URI: testMongoURI, Database: "grnoti_test", CollectionName: collection,
 			})
 			if err != nil {
@@ -128,13 +139,14 @@ func TestTokenStore_Contract(t *testing.T) {
 		})
 	})
 	t.Run("Postgres", func(t *testing.T) {
-		testTokenStoreContract(t, func(t *testing.T) TokenStore {
+		testDeviceStoreContract(t, func(t *testing.T) DeviceStore {
 			ensureTestPostgresSchema(t)
-			store, err := NewPostgresTokenStore(PostgresConfig{DSN: testPostgresDSN})
+			store, err := NewPostgresDeviceStore(PostgresConfig{DSN: testPostgresDSN})
 			if err != nil {
 				t.Skipf("PostgreSQL not available, skipping: %v", err)
 			}
-			cleanupContractRows(t, "grnoti_tokens", "token")
+			cleanupContractRows(t, "grnoti_devices", "user_id")
+			cleanupContractRows(t, "grnoti_devices", "anonymous_id")
 			return store
 		})
 	})

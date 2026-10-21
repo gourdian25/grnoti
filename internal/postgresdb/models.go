@@ -8,6 +8,18 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type GrnotiDevice struct {
+	Fid         string             `db:"fid" json:"fid"`
+	Platform    string             `db:"platform" json:"platform"`
+	UserID      string             `db:"user_id" json:"user_id"`
+	AnonymousID string             `db:"anonymous_id" json:"anonymous_id"`
+	DeviceID    string             `db:"device_id" json:"device_id"`
+	AppVersion  string             `db:"app_version" json:"app_version"`
+	IsActive    bool               `db:"is_active" json:"is_active"`
+	CreatedAt   pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
 type GrnotiDlq struct {
 	EventID        string             `db:"event_id" json:"event_id"`
 	EventData      []byte             `db:"event_data" json:"event_data"`
@@ -43,16 +55,4 @@ type GrnotiPreference struct {
 	EventTypeSettings []byte             `db:"event_type_settings" json:"event_type_settings"`
 	CreatedAt         pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt         pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-}
-
-type GrnotiToken struct {
-	Token       string             `db:"token" json:"token"`
-	Platform    string             `db:"platform" json:"platform"`
-	UserID      string             `db:"user_id" json:"user_id"`
-	AnonymousID string             `db:"anonymous_id" json:"anonymous_id"`
-	DeviceID    string             `db:"device_id" json:"device_id"`
-	AppVersion  string             `db:"app_version" json:"app_version"`
-	IsActive    bool               `db:"is_active" json:"is_active"`
-	CreatedAt   pgtype.Timestamptz `db:"created_at" json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }

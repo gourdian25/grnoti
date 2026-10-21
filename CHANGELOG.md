@@ -2,6 +2,77 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.0] - 2026-10-20
+
+**Breaking.** grnoti now addresses FCM by Firebase Installation ID (FID)
+only. firebase-admin-go v4.22.0 deprecates `messaging.Message.Token` and
+`MulticastMessage.Tokens` in favour of `Fid`/`Fids`, and Firebase's client
+SDKs are replacing registration tokens with FID registration. An FID and a
+registration token are different values: FCM answers a token sent as an
+FID with `UNREGISTERED`. So grnoti cannot keep tokens and drop the
+deprecated fields at once. The whole token vocabulary is renamed to
+Device/FID, and non-FIDs are refused at the door. See
+docs/architecture.md §3.13.
+
+### Changed
+
+- `dispatcher.fcm.go` sends with `MulticastMessage.Fids`/`Message.Fid`, never
+  the deprecated `Tokens`/`Token`.
+- Renamed (old → new):
+  - `DeviceToken{Token}` → `Device{FID}`; JSON/BSON key `token` → `fid`.
+  - `TokenStore` → `DeviceStore`; `ServiceDeps.TokenStore` → `ServiceDeps.DeviceStore`.
+  - `GetActiveTokens`/`GetActiveTokensBatch`/`GetActiveTokensByAnonymousID` →
+    `GetActiveDevices`/`GetActiveDevicesBatch`/`GetActiveDevicesByAnonymousID`.
+  - `SaveToken` → `SaveDevice`; `DeleteToken` → `DeleteDevice`. `MarkInvalid`
+    keeps its name and takes an FID.
+  - `NewMemoryTokenStore`, `NewMongoTokenStore`/`MongoTokenStoreConfig`,
+    `NewPostgresTokenStore` → `NewMemoryDeviceStore`,
+    `NewMongoDeviceStore`/`MongoDeviceStoreConfig`, `NewPostgresDeviceStore`.
+  - `DefaultTokenCollection` (`grnoti_tokens`) → `DefaultDeviceCollection`
+    (`grnoti_devices`), uniquely indexed on `fid`.
+  - `Event.DeviceTokens` (`device_tokens`) → `Event.FIDs` (`fids`);
+    `HasDirectTokens` → `HasDirectFIDs`.
+  - `DispatchResult.InvalidTokens` → `InvalidFIDs`;
+    `ProcessingResult.TokenCount` → `DeviceCount`.
+  - `PushDispatcher.SendToToken` → `SendToDevice`.
+  - `TokenTarget{Tokens}` → `DeviceTarget{Devices}`;
+    `NotificationTarget.GetTokens` → `GetDevices`.
+  - `NewTokenOnlyRouter` → `NewDeviceOnlyRouter`.
+  - `ServiceConfig.MaxTokensPerBatch`/`EnableTokenDeduplication` →
+    `MaxDevicesPerBatch`/`EnableDeviceDeduplication`.
+  - `FCMError.Token` → `FCMError.FID`; `Metrics.IncInvalidTokens` →
+    `IncInvalidFIDs`.
+  - Skip reason `no_active_tokens` → `no_active_devices`.
+- Postgres: table `grnoti_tokens(token, ...)` → `grnoti_devices(fid, ...)`,
+  indexes `idx_grnoti_devices_user`/`idx_grnoti_devices_anon`. Re-apply
+  `SchemaSQL()` through your migration tool.
+- Log lines mask an FID to its first 4 and last 2 characters.
+
+### Added
+
+- `ErrInvalidFID` and `Device.Validate`. Every `DeviceStore.SaveDevice`
+  and `Event.Validate` now refuse a value that isn't FID-shaped (the
+  Firebase JS SDK's `VALID_FID_PATTERN`: 22 URL-safe base64 characters,
+  the first `c`-`f`). Without this, a client still on the token APIs would
+  have every push answered `UNREGISTERED`, and its devices marked invalid.
+
+### Migrating
+
+- Clients must register with FIDs: `register()`/`onRegistered` in Android
+  firebase-messaging 25.1.0+, the Apple SDK 12.16.0+ with FID registration
+  enabled in `Info.plist`, or the Web JS SDK. Flutter's `firebase_messaging`
+  has no FID API yet.
+- There is no data migration. Stored registration tokens are not FIDs, so
+  each installation registers again with its FID. Drop `grnoti_tokens` and
+  the Mongo `grnoti_tokens` collection once that's done.
+
+### Dependencies
+
+- `firebase.google.com/go/v4` v4.21.0 → v4.22.0, `github.com/IBM/sarama`
+  v1.60.0 → v1.61.0, `github.com/jackc/pgx/v5` v5.10.0 → v5.11.0,
+  `github.com/redis/go-redis/v9` v9.21.0 → v9.22.0,
+  `go.mongodb.org/mongo-driver/v2` v2.8.0 → v2.9.1.
+
 ## [0.3.0] - 2026-09-05
 
 Migrates the Mongo-backed DLQ and token-store backends from

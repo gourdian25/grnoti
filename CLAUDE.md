@@ -19,7 +19,7 @@ is the condensed version so you don't have to open it for routine changes.
 
 **File naming**: every backend for a given concern is
 `<concern>.<backend>.go` with tests in `<concern>.<backend>_test.go` (e.g.
-`tokenstore.mongo.go`, `dlq.postgres.go`, `ratelimiter.redis.go`). In-memory
+`devicestore.mongo.go`, `dlq.postgres.go`, `ratelimiter.redis.go`). In-memory
 variants of every store live together in `memory.go`; `grcache`-backed
 adapters (idempotency, preferences read-through, experiment-assignment
 cache) live in `cache.*.go`. This is a deliberate divergence from sibling
@@ -33,7 +33,7 @@ concrete implementations; `NotificationService` (`service.go`) is the
 orchestrator that composes them all via `ServiceDeps`. The interface list
 and its full in-memory/cache/Mongo/Postgres/other matrix is in
 docs/architecture.md §2 — key ones to know before touching related code:
-`TokenStore`, `PreferencesStore`, `DLQHandler`, `ExperimentStore` +
+`DeviceStore`, `PreferencesStore`, `DLQHandler`, `ExperimentStore` +
 `ExperimentEngine` (assignment is a pure deterministic function, split
 from the store — see §3.5), `IdempotencyStore`, `RateLimiter`,
 `PushDispatcher` (FCM only), `EventConsumer`/`AnalyticsPublisher` (Kafka
@@ -62,6 +62,13 @@ it names):
   the shared-pool pattern for wiring multiple stores off one backend
   connection pool). `Close()` only closes a pool the store dialed itself
   — never one passed in via `Pool`. See [docs/postgres.md](docs/postgres.md).
+- FCM is addressed by Firebase Installation ID only (§3.13): a `Device` is
+  keyed by `FID`, and `dispatcher.fcm.go` sends with `Fid`/`Fids`. Don't
+  reintroduce the SDK's deprecated `Token`/`Tokens` fields, or relax
+  `validFID`: `SaveDevice` and `Event.Validate` refuse a non-FID with
+  `ErrInvalidFID` because FCM answers one `UNREGISTERED`, which would prune
+  the device. Tests name devices with `testFID("t1")`
+  (`contract_helpers_test.go`).
 
 ## Testing philosophy: real local services, not mocks
 
@@ -123,7 +130,7 @@ own migration tool once, before ever constructing one of these stores
 (see [docs/postgres.md](docs/postgres.md)). grnoti's own test suite
 handles this for you automatically: every `newTestPostgres*` helper and
 every "Postgres" contract-test subtest calls `ensureTestPostgresSchema`
-(`tokenstore.postgres_test.go`) first, which applies the schema via the
+(`devicestore.postgres_test.go`) first, which applies the schema via the
 unexported `applyPostgresSchema`, guarded by a Postgres advisory lock so
 concurrent test setup doesn't race on the DDL — so `go test`/`make test`
 work against a freshly created `grnoti_test` database with no manual
@@ -154,7 +161,7 @@ go test -run TestPostgres ./...       # every Postgres-backed test
 go test -run TestMongo ./...          # every Mongo-backed test
 go test -run TestRedisRateLimiter ./...
 go test -run TestKafka ./...
-go test -run TestTokenStore_Contract/Memory ./...   # one contract-test variant
+go test -run TestDeviceStore_Contract/Memory ./...   # one contract-test variant
 ```
 
 ## Everyday commands
@@ -204,7 +211,7 @@ anything else, and re-run `sqlc generate` to restore it.
 ## Conventions
 
 - One flat package. New backend support for an existing concern goes in
-  `<concern>.<backend>.go` (e.g. a hypothetical `tokenstore.dynamodb.go`),
+  `<concern>.<backend>.go` (e.g. a hypothetical `devicestore.dynamodb.go`),
   with its tests in `<concern>.<backend>_test.go`.
 - Every source file starts with a `// File: <path>` comment (bark-managed,
   see above — don't remove it, and don't hand-maintain it either, bark

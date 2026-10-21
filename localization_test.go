@@ -193,14 +193,14 @@ func TestLocalizedTemplateEngine_BuildMessage_LocaleResolverErrorFallsBackToDefa
 
 func TestLocalizedTemplateEngine_BuildMessage_NeitherAuthenticatedNorAnonymous(t *testing.T) {
 	localeStore := NewInMemoryLocalizationStore()
-	_ = localeStore.RegisterLocalizedTemplate(EventTypeSystemAlert, "en", MessageTemplate{TitleTemplate: "Direct token title", BodyTemplate: "ok"})
+	_ = localeStore.RegisterLocalizedTemplate(EventTypeSystemAlert, "en", MessageTemplate{TitleTemplate: "Direct FID title", BodyTemplate: "ok"})
 
 	engine := NewLocalizedTemplateEngine(NewTemplateEngine(), localeStore, NewStaticLocaleResolver("en"))
-	msg, err := engine.BuildMessage(Event{EventID: "e", DeviceTokens: []string{"t1"}, Type: EventTypeSystemAlert})
+	msg, err := engine.BuildMessage(Event{EventID: "e", FIDs: []string{"t1"}, Type: EventTypeSystemAlert})
 	if err != nil {
 		t.Fatalf("BuildMessage: %v", err)
 	}
-	if msg.Title != "Direct token title" {
+	if msg.Title != "Direct FID title" {
 		t.Fatalf("BuildMessage() = %+v, want the default-locale template resolved via GetDefaultLocale", msg)
 	}
 }

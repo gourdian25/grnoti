@@ -1,7 +1,7 @@
 // File: docs.go
 
 // Package grnoti provides a push-notification service for the gourdian
-// ecosystem: FCM dispatch, idempotent event processing, device-token
+// ecosystem: FCM dispatch, idempotent event processing, device
 // management, durable dead-letter retry tracking, circuit breaking,
 // distributed rate limiting, deterministic A/B experiment assignment,
 // localization, and topic-based routing, behind a set of storage-agnostic
@@ -12,7 +12,7 @@
 // grnoti's public API is a single flat package with no subpackages — every
 // backend (MongoDB, PostgreSQL, Redis, Kafka, FCM) lives in this one
 // module, distinguished by a "<concern>.<backend>.go" file-naming
-// convention (e.g. tokenstore.mongo.go, dlq.postgres.go,
+// convention (e.g. devicestore.mongo.go, dlq.postgres.go,
 // ratelimiter.redis.go). The one exception is internal/postgresdb, sqlc's
 // generated query code — it's a real Go subpackage, but an unexported
 // internal/ one, not importable outside this module, so it doesn't

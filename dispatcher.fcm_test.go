@@ -24,15 +24,16 @@ type fakeFCMClient struct {
 
 	multicastCalls   int
 	sendCalls        int
-	multicastBatches [][]string // tokens seen per SendEachForMulticast call
+	multicastBatches [][]string // FIDs seen per SendEachForMulticast call
 	multicastConfigs []*messaging.MulticastMessage
+	sentFIDs         []string // Message.Fid seen per Send call
 
 	// multicastErr, if set, makes SendEachForMulticast fail outright
-	// (simulating a total request failure, not a per-token error).
+	// (simulating a total request failure, not a per-FID error).
 	multicastErr error
-	// perTokenError maps a token to the error FCM should report for it in
+	// perFIDError maps an FID to the error FCM should report for it in
 	// that batch's response (partial failure).
-	perTokenError map[string]error
+	perFIDError map[string]error
 	// failMulticastUntilCall makes SendEachForMulticast return
 	// multicastErr for calls 1..N, then succeed from call N+1 onward —
 	// used to prove retry actually recovers.
@@ -41,16 +42,11 @@ type fakeFCMClient struct {
 	sendErr error
 }
 
-// msg.Tokens (not the SDK's newer Fids field) is deliberate throughout this
-// file: Fids addresses Firebase Installation IDs, a different concept from
-// the FCM registration tokens DeviceToken.Token represents everywhere else
-// in this codebase — switching would be an unrequested addressing-scheme
-// change, not a like-for-like fix of a deprecation warning.
 func (f *fakeFCMClient) SendEachForMulticast(_ context.Context, msg *messaging.MulticastMessage) (*messaging.BatchResponse, error) {
 	f.mu.Lock()
 	f.multicastCalls++
 	call := f.multicastCalls
-	f.multicastBatches = append(f.multicastBatches, append([]string(nil), msg.Tokens...)) //nolint:staticcheck // see file-level note on Tokens vs Fids above
+	f.multicastBatches = append(f.multicastBatches, append([]string(nil), msg.Fids...))
 	f.multicastConfigs = append(f.multicastConfigs, msg)
 	f.mu.Unlock()
 
@@ -62,13 +58,13 @@ func (f *fakeFCMClient) SendEachForMulticast(_ context.Context, msg *messaging.M
 	}
 
 	resp := &messaging.BatchResponse{}
-	for _, tok := range msg.Tokens { //nolint:staticcheck // see file-level note on Tokens vs Fids above
-		if err, ok := f.perTokenError[tok]; ok {
+	for _, fid := range msg.Fids {
+		if err, ok := f.perFIDError[fid]; ok {
 			resp.Responses = append(resp.Responses, &messaging.SendResponse{Success: false, Error: err})
 			resp.FailureCount++
 			continue
 		}
-		resp.Responses = append(resp.Responses, &messaging.SendResponse{Success: true, MessageID: "msg-" + tok})
+		resp.Responses = append(resp.Responses, &messaging.SendResponse{Success: true, MessageID: "msg-" + fid})
 		resp.SuccessCount++
 	}
 	return resp, nil
@@ -77,6 +73,7 @@ func (f *fakeFCMClient) SendEachForMulticast(_ context.Context, msg *messaging.M
 func (f *fakeFCMClient) Send(_ context.Context, msg *messaging.Message) (string, error) {
 	f.mu.Lock()
 	f.sendCalls++
+	f.sentFIDs = append(f.sentFIDs, msg.Fid)
 	f.mu.Unlock()
 	if f.sendErr != nil {
 		return "", f.sendErr
@@ -97,16 +94,16 @@ func (f *fakeFCMClient) batches() [][]string {
 }
 
 type stubMetrics struct {
-	mu            sync.Mutex
-	invalidTokens int
+	mu          sync.Mutex
+	invalidFIDs int
 }
 
 func (s *stubMetrics) IncNotificationsProcessed()                      {}
 func (s *stubMetrics) IncNotificationsSent(EventType, Platform, int)   {}
 func (s *stubMetrics) IncNotificationsFailed(EventType, Platform, int) {}
-func (s *stubMetrics) IncInvalidTokens(count int) {
+func (s *stubMetrics) IncInvalidFIDs(count int) {
 	s.mu.Lock()
-	s.invalidTokens += count
+	s.invalidFIDs += count
 	s.mu.Unlock()
 }
 func (s *stubMetrics) IncEventsSkipped(string)                                   {}
@@ -115,7 +112,7 @@ func (s *stubMetrics) ObserveProcessingLatency(time.Duration)                   
 func (s *stubMetrics) get() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.invalidTokens
+	return s.invalidFIDs
 }
 
 // countingRateLimiter proves sendBatch actually calls Wait before hitting
@@ -138,7 +135,7 @@ func (c *countingRateLimiter) GetStats(context.Context) (RateLimiterStats, error
 	return RateLimiterStats{}, nil
 }
 
-func androidToken(tok string) DeviceToken { return DeviceToken{Token: tok, Platform: PlatformAndroid} }
+func androidDevice(tok string) Device { return Device{FID: tok, Platform: PlatformAndroid} }
 
 func TestDefaultFCMDispatcherConfig(t *testing.T) {
 	cfg := DefaultFCMDispatcherConfig()
@@ -166,17 +163,17 @@ func TestFCMDispatcher_InvalidRetryConfig(t *testing.T) {
 	}
 }
 
-func TestFCMDispatcher_Send_EmptyTokens(t *testing.T) {
+func TestFCMDispatcher_Send_EmptyDevices(t *testing.T) {
 	d, err := NewFCMDispatcher(FCMDispatcherDeps{Client: &fakeFCMClient{}})
 	if err != nil {
 		t.Fatalf("NewFCMDispatcher: %v", err)
 	}
 	result, err := d.Send(context.Background(), nil, Message{Title: "t"})
 	if err != nil {
-		t.Fatalf("Send(empty tokens): %v", err)
+		t.Fatalf("Send(empty devices): %v", err)
 	}
 	if result.TotalCount() != 0 {
-		t.Fatalf("Send(empty tokens) result = %+v, want zero", result)
+		t.Fatalf("Send(empty devices) result = %+v, want zero", result)
 	}
 }
 
@@ -186,13 +183,13 @@ func TestFCMDispatcher_Send_PayloadTooLarge(t *testing.T) {
 		t.Fatalf("NewFCMDispatcher: %v", err)
 	}
 	hugeData := map[string]string{"blob": strings.Repeat("x", FCMMaxPayloadSize*2)}
-	tokens := []DeviceToken{androidToken("t1")}
-	result, err := d.Send(context.Background(), tokens, Message{Title: "t", Data: hugeData})
+	devices := []Device{androidDevice("t1")}
+	result, err := d.Send(context.Background(), devices, Message{Title: "t", Data: hugeData})
 	if !errors.Is(err, ErrFCMPayloadTooLarge) {
 		t.Fatalf("Send(oversized payload) error = %v, want ErrFCMPayloadTooLarge", err)
 	}
-	if result.FailureCount != len(tokens) {
-		t.Fatalf("Send(oversized payload) FailureCount = %d, want %d", result.FailureCount, len(tokens))
+	if result.FailureCount != len(devices) {
+		t.Fatalf("Send(oversized payload) FailureCount = %d, want %d", result.FailureCount, len(devices))
 	}
 }
 
@@ -202,8 +199,8 @@ func TestFCMDispatcher_Send_AllSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFCMDispatcher: %v", err)
 	}
-	tokens := []DeviceToken{androidToken("t1"), androidToken("t2"), androidToken("t3")}
-	result, err := d.Send(context.Background(), tokens, Message{Title: "hi"})
+	devices := []Device{androidDevice("t1"), androidDevice("t2"), androidDevice("t3")}
+	result, err := d.Send(context.Background(), devices, Message{Title: "hi"})
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -212,11 +209,11 @@ func TestFCMDispatcher_Send_AllSuccess(t *testing.T) {
 	}
 }
 
-func TestFCMDispatcher_Send_DeduplicatesTokens(t *testing.T) {
+func TestFCMDispatcher_Send_DeduplicatesDevices(t *testing.T) {
 	client := &fakeFCMClient{}
 	d, _ := NewFCMDispatcher(FCMDispatcherDeps{Client: client})
-	tokens := []DeviceToken{androidToken("t1"), androidToken("t1"), androidToken("t2")}
-	result, err := d.Send(context.Background(), tokens, Message{Title: "hi"})
+	devices := []Device{androidDevice("t1"), androidDevice("t1"), androidDevice("t2")}
+	result, err := d.Send(context.Background(), devices, Message{Title: "hi"})
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -225,23 +222,23 @@ func TestFCMDispatcher_Send_DeduplicatesTokens(t *testing.T) {
 	}
 }
 
-func TestFCMDispatcher_Send_ClassifiesInvalidTokensAndReportsMetrics(t *testing.T) {
-	client := &fakeFCMClient{perTokenError: map[string]error{
-		"bad-token": errors.New("NotRegistered: this token is no longer valid"),
+func TestFCMDispatcher_Send_ClassifiesInvalidFIDsAndReportsMetrics(t *testing.T) {
+	client := &fakeFCMClient{perFIDError: map[string]error{
+		"bad-fid": errors.New("NotRegistered: this FID is no longer valid"),
 	}}
 	metrics := &stubMetrics{}
 	d, _ := NewFCMDispatcher(FCMDispatcherDeps{Client: client, Metrics: metrics})
 
-	tokens := []DeviceToken{androidToken("good-token"), androidToken("bad-token")}
-	result, err := d.Send(context.Background(), tokens, Message{Title: "hi"})
+	devices := []Device{androidDevice("good-fid"), androidDevice("bad-fid")}
+	result, err := d.Send(context.Background(), devices, Message{Title: "hi"})
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	if len(result.InvalidTokens) != 1 || result.InvalidTokens[0] != "bad-token" {
-		t.Fatalf("Send() InvalidTokens = %v, want [bad-token]", result.InvalidTokens)
+	if len(result.InvalidFIDs) != 1 || result.InvalidFIDs[0] != "bad-fid" {
+		t.Fatalf("Send() InvalidFIDs = %v, want [bad-fid]", result.InvalidFIDs)
 	}
 	if got := metrics.get(); got != 1 {
-		t.Fatalf("Metrics.IncInvalidTokens total = %d, want 1", got)
+		t.Fatalf("Metrics.IncInvalidFIDs total = %d, want 1", got)
 	}
 }
 
@@ -254,8 +251,8 @@ func TestFCMDispatcher_Send_RetriesRetryableErrorsAndRecovers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFCMDispatcher: %v", err)
 	}
-	tokens := []DeviceToken{androidToken("t1")}
-	result, sendErr := d.Send(context.Background(), tokens, Message{Title: "hi"})
+	devices := []Device{androidDevice("t1")}
+	result, sendErr := d.Send(context.Background(), devices, Message{Title: "hi"})
 	if sendErr != nil {
 		t.Fatalf("Send: %v", sendErr)
 	}
@@ -301,7 +298,7 @@ func TestFCMDispatcher_SendBatchWithRetry_CtxCanceledDuringBackoff(t *testing.T)
 	}()
 
 	start := time.Now()
-	result := d.sendBatchWithRetry(ctx, []DeviceToken{androidToken("t1")}, Message{Title: "hi"}, PlatformAndroid)
+	result := d.sendBatchWithRetry(ctx, []Device{androidDevice("t1")}, Message{Title: "hi"}, PlatformAndroid)
 	elapsed := time.Since(start)
 
 	if elapsed >= 150*time.Millisecond {
@@ -316,10 +313,10 @@ func TestFCMDispatcher_SendBatchWithRetry_CtxCanceledDuringBackoff(t *testing.T)
 }
 
 func TestFCMDispatcher_Send_NoRetryWhenDisabled(t *testing.T) {
-	client := &fakeFCMClient{perTokenError: map[string]error{"t1": errors.New("unavailable")}}
+	client := &fakeFCMClient{perFIDError: map[string]error{"t1": errors.New("unavailable")}}
 	d, _ := NewFCMDispatcher(FCMDispatcherDeps{Client: client, Config: FCMDispatcherConfig{EnableRetry: false}})
-	tokens := []DeviceToken{androidToken("t1")}
-	if _, err := d.Send(context.Background(), tokens, Message{Title: "hi"}); err != nil {
+	devices := []Device{androidDevice("t1")}
+	if _, err := d.Send(context.Background(), devices, Message{Title: "hi"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	multicastCalls, _ := client.callCount()
@@ -332,22 +329,22 @@ func TestFCMDispatcher_Send_BatchesAtFCMMaxBatchSize(t *testing.T) {
 	client := &fakeFCMClient{}
 	d, _ := NewFCMDispatcher(FCMDispatcherDeps{Client: client})
 
-	const totalTokens = FCMMaxBatchSize + 200
-	tokens := make([]DeviceToken, totalTokens)
-	for i := range tokens {
-		tokens[i] = androidToken(fmt.Sprintf("t-%d", i))
+	const totalDevices = FCMMaxBatchSize + 200
+	devices := make([]Device, totalDevices)
+	for i := range devices {
+		devices[i] = androidDevice(fmt.Sprintf("t-%d", i))
 	}
-	result, err := d.Send(context.Background(), tokens, Message{Title: "hi"})
+	result, err := d.Send(context.Background(), devices, Message{Title: "hi"})
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	if result.SuccessCount != totalTokens {
-		t.Fatalf("Send() SuccessCount = %d, want %d", result.SuccessCount, totalTokens)
+	if result.SuccessCount != totalDevices {
+		t.Fatalf("Send() SuccessCount = %d, want %d", result.SuccessCount, totalDevices)
 	}
 
 	batches := client.batches()
 	if len(batches) != 2 {
-		t.Fatalf("multicast call count = %d, want 2 batches for %d tokens at max %d", len(batches), totalTokens, FCMMaxBatchSize)
+		t.Fatalf("multicast call count = %d, want 2 batches for %d devices at max %d", len(batches), totalDevices, FCMMaxBatchSize)
 	}
 	for _, b := range batches {
 		if len(b) > FCMMaxBatchSize {
@@ -356,16 +353,16 @@ func TestFCMDispatcher_Send_BatchesAtFCMMaxBatchSize(t *testing.T) {
 	}
 }
 
-func TestFCMDispatcher_Send_GroupsTokensByPlatform(t *testing.T) {
+func TestFCMDispatcher_Send_GroupsDevicesByPlatform(t *testing.T) {
 	client := &fakeFCMClient{}
 	d, _ := NewFCMDispatcher(FCMDispatcherDeps{Client: client})
 
-	tokens := []DeviceToken{
-		{Token: "a1", Platform: PlatformAndroid},
-		{Token: "i1", Platform: PlatformIOS},
-		{Token: "w1", Platform: PlatformWeb},
+	devices := []Device{
+		{FID: "a1", Platform: PlatformAndroid},
+		{FID: "i1", Platform: PlatformIOS},
+		{FID: "w1", Platform: PlatformWeb},
 	}
-	if _, err := d.Send(context.Background(), tokens, Message{Title: "hi"}); err != nil {
+	if _, err := d.Send(context.Background(), devices, Message{Title: "hi"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -393,15 +390,15 @@ func TestFCMDispatcher_Send_GroupsTokensByPlatform(t *testing.T) {
 }
 
 func TestFCMDispatcher_Send_PopulatesPerPlatformBreakdown(t *testing.T) {
-	client := &fakeFCMClient{perTokenError: map[string]error{"i1": errors.New("NotRegistered")}}
+	client := &fakeFCMClient{perFIDError: map[string]error{"i1": errors.New("NotRegistered")}}
 	d, _ := NewFCMDispatcher(FCMDispatcherDeps{Client: client})
 
-	tokens := []DeviceToken{
-		{Token: "a1", Platform: PlatformAndroid},
-		{Token: "a2", Platform: PlatformAndroid},
-		{Token: "i1", Platform: PlatformIOS},
+	devices := []Device{
+		{FID: "a1", Platform: PlatformAndroid},
+		{FID: "a2", Platform: PlatformAndroid},
+		{FID: "i1", Platform: PlatformIOS},
 	}
-	result, err := d.Send(context.Background(), tokens, Message{Title: "hi"})
+	result, err := d.Send(context.Background(), devices, Message{Title: "hi"})
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -421,12 +418,12 @@ func TestFCMDispatcher_Send_RateLimiterGatesEachBatch(t *testing.T) {
 	rl := &countingRateLimiter{}
 	d, _ := NewFCMDispatcher(FCMDispatcherDeps{Client: client, RateLimiter: rl})
 
-	const totalTokens = FCMMaxBatchSize + 1 // forces 2 batches
-	tokens := make([]DeviceToken, totalTokens)
-	for i := range tokens {
-		tokens[i] = androidToken(fmt.Sprintf("t-%d", i))
+	const totalDevices = FCMMaxBatchSize + 1 // forces 2 batches
+	devices := make([]Device, totalDevices)
+	for i := range devices {
+		devices[i] = androidDevice(fmt.Sprintf("t-%d", i))
 	}
-	if _, err := d.Send(context.Background(), tokens, Message{Title: "hi"}); err != nil {
+	if _, err := d.Send(context.Background(), devices, Message{Title: "hi"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	if got := rl.waits.Load(); got != 2 {
@@ -446,12 +443,12 @@ func TestFCMDispatcher_Send_CircuitBreakerOpensAndShortCircuits(t *testing.T) {
 	}
 
 	// Two failures trip the breaker (maxFailures=2). Send's contract is
-	// that per-token/per-batch failures surface via DispatchResult, not
+	// that per-FID/per-batch failures surface via DispatchResult, not
 	// the returned error (that's reserved for "couldn't attempt delivery
 	// at all", e.g. payload-too-large) — so assert on FailureCount here,
 	// not the returned err.
 	for i := 0; i < 2; i++ {
-		result, err := d.Send(context.Background(), []DeviceToken{androidToken(fmt.Sprintf("t%d", i))}, Message{Title: "hi"})
+		result, err := d.Send(context.Background(), []Device{androidDevice(fmt.Sprintf("t%d", i))}, Message{Title: "hi"})
 		if err != nil {
 			t.Fatalf("Send #%d: unexpected top-level error: %v", i, err)
 		}
@@ -462,7 +459,7 @@ func TestFCMDispatcher_Send_CircuitBreakerOpensAndShortCircuits(t *testing.T) {
 	multicastCallsAfterTrip, _ := client.callCount()
 
 	// The breaker should now be open: a further Send must not reach the client at all.
-	result, err := d.Send(context.Background(), []DeviceToken{androidToken("t-blocked")}, Message{Title: "hi"})
+	result, err := d.Send(context.Background(), []Device{androidDevice("t-blocked")}, Message{Title: "hi"})
 	if err != nil {
 		t.Fatalf("Send() after breaker trip: unexpected top-level error: %v", err)
 	}
@@ -475,31 +472,34 @@ func TestFCMDispatcher_Send_CircuitBreakerOpensAndShortCircuits(t *testing.T) {
 	}
 }
 
-func TestFCMDispatcher_SendToToken_Success(t *testing.T) {
+func TestFCMDispatcher_SendToDevice_Success(t *testing.T) {
 	client := &fakeFCMClient{}
 	d, _ := NewFCMDispatcher(FCMDispatcherDeps{Client: client})
-	if err := d.SendToToken(context.Background(), androidToken("t1"), Message{Title: "hi"}); err != nil {
-		t.Fatalf("SendToToken: %v", err)
+	if err := d.SendToDevice(context.Background(), androidDevice("t1"), Message{Title: "hi"}); err != nil {
+		t.Fatalf("SendToDevice: %v", err)
 	}
 	_, sendCalls := client.callCount()
 	if sendCalls != 1 {
 		t.Fatalf("Send call count = %d, want 1", sendCalls)
 	}
+	if len(client.sentFIDs) != 1 || client.sentFIDs[0] != "t1" {
+		t.Fatalf("Message.Fid per Send call = %q, want [t1] (FCM addressed by FID)", client.sentFIDs)
+	}
 }
 
-func TestFCMDispatcher_SendToToken_ClassifiesError(t *testing.T) {
+func TestFCMDispatcher_SendToDevice_ClassifiesError(t *testing.T) {
 	client := &fakeFCMClient{sendErr: errors.New("NotRegistered")}
 	d, _ := NewFCMDispatcher(FCMDispatcherDeps{Client: client})
-	err := d.SendToToken(context.Background(), androidToken("t1"), Message{Title: "hi"})
+	err := d.SendToDevice(context.Background(), androidDevice("t1"), Message{Title: "hi"})
 	var fcmErr *FCMError
 	if !errors.As(err, &fcmErr) {
-		t.Fatalf("SendToToken error = %v, want an *FCMError", err)
+		t.Fatalf("SendToDevice error = %v, want an *FCMError", err)
 	}
 	if fcmErr.Code != FCMErrorCodeUnregistered {
 		t.Fatalf("FCMError.Code = %s, want %s", fcmErr.Code, FCMErrorCodeUnregistered)
 	}
 	if !fcmErr.IsPermanent() {
-		t.Fatal("FCMError.IsPermanent() = false, want true for an unregistered token")
+		t.Fatal("FCMError.IsPermanent() = false, want true for an unregistered FID")
 	}
 }
 
@@ -521,12 +521,12 @@ func TestFCMDispatcher_SendToTopic_CircuitBreakerWraps(t *testing.T) {
 	}
 }
 
-func TestFCMDispatcher_SendToToken_CircuitBreakerWraps(t *testing.T) {
+func TestFCMDispatcher_SendToDevice_CircuitBreakerWraps(t *testing.T) {
 	client := &fakeFCMClient{sendErr: errors.New("boom")}
 	cb, _ := NewCircuitBreaker(1, time.Hour, time.Hour)
 	d, _ := NewFCMDispatcher(FCMDispatcherDeps{Client: client, CircuitBreaker: cb})
 
-	_ = d.SendToToken(context.Background(), androidToken("t1"), Message{Title: "hi"})
+	_ = d.SendToDevice(context.Background(), androidDevice("t1"), Message{Title: "hi"})
 	if got := cb.State(); got != CircuitStateOpen {
 		t.Fatalf("circuit breaker State() after 1 failure (MaxFailures=1) = %s, want %s", got, CircuitStateOpen)
 	}
@@ -540,13 +540,13 @@ func TestFCMDispatcher_SendToTopic_Success(t *testing.T) {
 	}
 }
 
-func TestFCMDispatcher_SendToToken_RateLimiterError(t *testing.T) {
+func TestFCMDispatcher_SendToDevice_RateLimiterError(t *testing.T) {
 	client := &fakeFCMClient{}
 	limiter := &countingRateLimiter{waitErr: errors.New("rate limited")}
 	d, _ := NewFCMDispatcher(FCMDispatcherDeps{Client: client, RateLimiter: limiter})
-	err := d.SendToToken(context.Background(), androidToken("t1"), Message{Title: "hi"})
+	err := d.SendToDevice(context.Background(), androidDevice("t1"), Message{Title: "hi"})
 	if err == nil || !strings.Contains(err.Error(), "rate limited") {
-		t.Fatalf("SendToToken error = %v, want it to wrap the rate limiter error", err)
+		t.Fatalf("SendToDevice error = %v, want it to wrap the rate limiter error", err)
 	}
 	if _, sendCalls := client.callCount(); sendCalls != 0 {
 		t.Fatalf("Send call count = %d, want 0 (never reached client)", sendCalls)
@@ -582,17 +582,17 @@ func TestFCMDispatcher_Send_ContextCanceledStopsFurtherBatches(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already canceled before Send even starts
 
-	const totalTokens = FCMMaxBatchSize + 1
-	tokens := make([]DeviceToken, totalTokens)
-	for i := range tokens {
-		tokens[i] = androidToken(fmt.Sprintf("t-%d", i))
+	const totalDevices = FCMMaxBatchSize + 1
+	devices := make([]Device, totalDevices)
+	for i := range devices {
+		devices[i] = androidDevice(fmt.Sprintf("t-%d", i))
 	}
-	result, err := d.Send(ctx, tokens, Message{Title: "hi"})
+	result, err := d.Send(ctx, devices, Message{Title: "hi"})
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	if result.FailureCount != totalTokens {
-		t.Fatalf("Send() with pre-canceled ctx FailureCount = %d, want %d (all batches skipped)", result.FailureCount, totalTokens)
+	if result.FailureCount != totalDevices {
+		t.Fatalf("Send() with pre-canceled ctx FailureCount = %d, want %d (all batches skipped)", result.FailureCount, totalDevices)
 	}
 	multicastCalls, _ := client.callCount()
 	if multicastCalls != 0 {
@@ -789,7 +789,7 @@ func TestClassifyFCMError_Table(t *testing.T) {
 		wantRetryable bool
 	}{
 		{"NotRegistered", FCMErrorCodeUnregistered, true, false},
-		{"invalid-argument: bad token", FCMErrorCodeInvalidArgument, true, false},
+		{"invalid-argument: bad fid", FCMErrorCodeInvalidArgument, true, false},
 		{"MismatchSenderId", FCMErrorCodeSenderIDMismatch, true, false},
 		{"quota-exceeded", FCMErrorCodeQuotaExceeded, false, true},
 		{"service unavailable", FCMErrorCodeUnavailable, false, true},
@@ -819,13 +819,11 @@ func TestClassifyFCMError_Nil(t *testing.T) {
 	}
 }
 
-func TestMaskToken(t *testing.T) {
-	if got := maskToken("short"); got != "***" {
-		t.Fatalf("maskToken(short) = %q, want ***", got)
+func TestMaskFID(t *testing.T) {
+	if got := maskFID("short"); got != "***" {
+		t.Fatalf("maskFID(short) = %q, want ***", got)
 	}
-	long := "abcdefghijklmnopqrstuvwxyz"
-	got := maskToken(long)
-	if !strings.HasPrefix(got, "abcdefgh") || !strings.HasSuffix(got, "wxyz") {
-		t.Fatalf("maskToken(long) = %q, want prefix abcdefgh and suffix wxyz", got)
+	if got := maskFID("fAbCdEfGhIjKlMnOpQrStU"); got != "fAbC...tU" {
+		t.Fatalf("maskFID(22-char FID) = %q, want fAbC...tU (first 4, last 2)", got)
 	}
 }

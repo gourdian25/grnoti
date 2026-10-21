@@ -18,7 +18,7 @@ import (
 // exactly the kind of thing this contract suite's "can't be expressed
 // generically without real backend-specific concurrency" carve-out is for
 // — this suite covers the sequential lifecycle contract shared by all
-// three. See testTokenStoreContract's doc comment for why newStore takes
+// three. See testDeviceStoreContract's doc comment for why newStore takes
 // the currently-executing *testing.T.
 func testDLQHandlerContract(t *testing.T, newHandler func(t *testing.T) DLQHandler) {
 	t.Helper()
