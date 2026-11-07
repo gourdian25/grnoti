@@ -61,7 +61,7 @@ together:
 - [graudit](https://github.com/gourdian25/graudit) — an append-only,
   tamper-evident audit log with pluggable storage backends.
 - [grpolicy](https://github.com/gourdian25/grpolicy) — attribute-based
-  policy evaluation (RBAC/ABAC), independent of any notion of "user" or
+  policy evaluation, independent of any notion of "user" or
   "role".
 
 ## Install

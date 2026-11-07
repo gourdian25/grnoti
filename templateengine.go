@@ -33,9 +33,9 @@ var _ TemplateEngine = (*defaultTemplateEngine)(nil)
 
 // NewTemplateEngine constructs a TemplateEngine pre-seeded with a small set
 // of generic default templates (see registerDefaults) — deliberately
-// scheme-free and deep-link-free, unlike the reference implementation,
-// which hardcoded a "skipp://" deep-link scheme into 8 of 9 default
-// templates (see docs/plan/grnoti-plan.md §2 item 8). Consumers register
+// scheme-free and deep-link-free, so no application's URL scheme is baked
+// into a generic library default (see docs/plan/grnoti-plan.md §2 item 8).
+// Consumers register
 // their own application-specific templates (including their own deep-link
 // scheme) via RegisterTemplate.
 func NewTemplateEngine() TemplateEngine {

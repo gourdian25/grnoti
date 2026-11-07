@@ -209,10 +209,8 @@ two unrelated failure modes collapsed into one error a caller's
 ### 3.10 Templates: no hardcoded scheme, compiled once per registration
 
 `NewTemplateEngine()`'s built-in defaults are deliberately scheme-free and
-deep-link-free — the reference implementation hardcoded a `"skipp://"`
-deep-link scheme into 8 of its 9 default templates, baking one specific
-application's URL scheme into a supposedly generic library default.
-Consumers register their own application-specific templates (including
+deep-link-free, so no specific application's URL scheme is baked into a
+generic library default. Consumers register their own application-specific templates (including
 their own deep-link scheme) via `RegisterTemplate`.
 `localizedTemplateEngine` (the locale-aware decorator, `localization.go`)
 compiles a localized `MessageTemplate` once, at registration time, and
