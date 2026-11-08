@@ -3,10 +3,8 @@
 -- name: UpsertDLQEvent :exec
 -- A single atomic upsert handles both "new failure" (insert) and "another
 -- failure for an event already pending/retrying" (update, via jsonb ||
--- concatenation onto the existing history) in one write path — see
--- docs/plan/grnoti-plan.md §3.5 for the defect this design fixes (the
--- reference implementation had two separate, uncoordinated writers for
--- these two cases).
+-- concatenation onto the existing history) in one write path, so there
+-- are never two uncoordinated writers for these two cases.
 INSERT INTO grnoti_dlq (event_id, event_data, failure_reason, retry_count, max_retries, first_failure_at, last_attempt_at, next_retry_at, status, attempt_history, created_at, updated_at)
 VALUES ($1, $2, $3, 0, $4, $5, $5, $6, $7, $8, $5, $5)
 ON CONFLICT (event_id) DO UPDATE SET

@@ -13,10 +13,8 @@ import (
 
 // deterministicExperimentEngine computes variant assignment as a pure
 // function of (userID, experiment.ID, experiment.Variants) and caches the
-// result in a sync.RWMutex-protected map. Unlike the reference
-// implementation's deterministicExperimentEngine — whose equivalent maps
-// were mutated with zero synchronization (see docs/plan/grnoti-plan.md §2
-// item 2) — every access here is lock-protected. AssignVariant holds a
+// result in a sync.RWMutex-protected map: every access is lock-protected,
+// since the engine is shared by concurrent workers. AssignVariant holds a
 // single write lock across its entire check-then-write sequence for a
 // given key (see AssignVariant), so at most one goroutine can ever observe
 // "not yet assigned" and proceed to compute+store+publish for that key —
@@ -125,9 +123,8 @@ func deterministicPick(userID string, experiment *Experiment) ExperimentVariant 
 }
 
 // TrackImpression publishes a real analytics event via the configured
-// AnalyticsPublisher. Unlike the reference implementation's hardcoded
-// no-op (see docs/plan/grnoti-plan.md §2 item 9), a missing
-// AnalyticsPublisher is visibly logged, not silently dropped.
+// AnalyticsPublisher. A missing AnalyticsPublisher is visibly logged, not
+// silently dropped, so lost analytics never go unnoticed.
 func (e *deterministicExperimentEngine) TrackImpression(ctx context.Context, userID string, experimentID string, variantID string) error {
 	if e.analytics == nil {
 		e.logger.Warn("grnoti: TrackImpression dropped, no AnalyticsPublisher configured", "user_id", userID, "experiment_id", experimentID, "variant_id", variantID)

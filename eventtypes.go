@@ -11,12 +11,12 @@ import "sync"
 // optional metadata) via EventTypeRegistry rather than grnoti maintaining
 // an exhaustive catalog.
 //
-// This is a deliberate departure from the reference implementation, which
-// compiled ~130 e-commerce-specific constants directly into the library and
-// spread each type's behavioral traits (default priority, category,
-// retryability, ...) across eight separately-maintained exhaustive switch
-// statements that had to be extended in lockstep for every new type. Here,
-// a trait is one field in one EventTypeMetadata value, registered once.
+// This is deliberate: compiling a domain's event types into the library
+// would tie it to one application, and spreading each type's behavioral
+// traits (default priority, category, retryability, ...) across separate
+// exhaustive switch statements would force every new type to extend them
+// all in lockstep. Here, a trait is one field in one EventTypeMetadata
+// value, registered once.
 type EventType string
 
 // String returns the underlying string value.
@@ -31,10 +31,9 @@ func (e EventType) String() string { return string(e) }
 // which types may be used at all.
 func (e EventType) IsValid() bool { return e != "" }
 
-// A small, generic starter vocabulary. Deliberately not domain-specific —
-// contrast with the reference implementation's ~130 e-commerce constants
-// (order lifecycle, returns, loyalty, EMI due dates, ...), which belong in
-// a consumer-side package, not here.
+// A small, generic starter vocabulary. Deliberately not domain-specific:
+// an application's own types (order lifecycle, returns, loyalty, ...)
+// belong in a consumer-side package, not here.
 const (
 	// EventTypeCustom is the fallback type for anything not otherwise
 	// registered. TemplateEngine implementations fall back to a template
@@ -66,9 +65,8 @@ const (
 )
 
 // EventTypeMetadata describes the behavioral traits associated with an
-// EventType, registered via EventTypeRegistry.Register. Replaces the
-// reference implementation's eight separate exhaustive switch statements
-// (one per trait) with a single data value per type.
+// EventType, registered via EventTypeRegistry.Register: a single data
+// value per type rather than one exhaustive switch statement per trait.
 type EventTypeMetadata struct {
 	// DefaultPriority is used when an Event of this type doesn't specify
 	// its own Priority.

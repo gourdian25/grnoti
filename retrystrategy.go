@@ -61,10 +61,9 @@ type fullJitterRetry struct {
 var _ RetryStrategy = (*fullJitterRetry)(nil)
 
 // NewFullJitterRetry constructs a RetryStrategy for FCM dispatch retries,
-// backed by FullJitterBackoff. Replaces the reference implementation's
-// un-jittered base*2^attempt strategy (see docs/plan/grnoti-plan.md §1.2)
-// — a synchronized retry storm across replicas after an FCM outage is
-// exactly what jitter exists to avoid.
+// backed by FullJitterBackoff rather than an un-jittered base*2^attempt
+// (see docs/plan/grnoti-plan.md §1.2) — a synchronized retry storm across
+// replicas after an FCM outage is exactly what jitter exists to avoid.
 //
 // Parameters:
 //   - maxAttempts: int — total attempts, including the first; ShouldRetry
@@ -85,9 +84,8 @@ func (r *fullJitterRetry) ShouldRetry(attempt int, err error) bool {
 	}
 	// An error that isn't a classified FCMError (e.g. a network timeout
 	// surfaced directly from the FCM client) is treated as retryable by
-	// default — the reference implementation treated any non-FCMError as
-	// non-retryable, which silently gave up on plain transient errors
-	// (see docs/plan/grnoti-plan.md's research notes on retry.strategy.go).
+	// default: treating it as non-retryable would silently give up on
+	// plain transient errors.
 	return true
 }
 

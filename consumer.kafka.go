@@ -21,9 +21,8 @@ type KafkaConsumerConfig struct {
 	GroupID string
 	// Topics are the topics to subscribe to. Required, non-empty.
 	Topics []string
-	// SaramaConfig, if nil, defaults to a config matching the reference
-	// implementation's own defaults (sarama.V3_0_0_0, round-robin
-	// rebalancing, OffsetOldest, Consumer.Return.Errors=true).
+	// SaramaConfig, if nil, defaults to sarama.V3_0_0_0, round-robin
+	// rebalancing, OffsetOldest and Consumer.Return.Errors=true.
 	SaramaConfig *sarama.Config
 	// Logger receives optional diagnostic messages. A nil Logger disables
 	// logging.
@@ -31,12 +30,12 @@ type KafkaConsumerConfig struct {
 }
 
 // kafkaEventConsumer implements EventConsumer using Kafka via
-// github.com/IBM/sarama's consumer-group API. Structurally the same shape
-// as the reference implementation (JSON-decode each message into an Event,
-// mark-then-skip on decode failure, mark-only-on-handler-success for
-// at-least-once redelivery of processing failures) — the one defect fix in
-// scope for this file is using grnoti's own Logger interface instead of a
-// hardcoded *grlog.Logger (defect #5, docs/plan/grnoti-plan.md §2).
+// github.com/IBM/sarama's consumer-group API: JSON-decode each message
+// into an Event, mark-then-skip on decode failure (a message that can never
+// decode would otherwise block its partition forever), and mark only on
+// handler success, so a processing failure is redelivered (at-least-once).
+// It logs through grnoti's own Logger interface rather than a concrete
+// *grlog.Logger, so a caller can plug in any logger.
 //
 // The consumer itself has no compile-time dependency on WorkerPool: Start's
 // handler parameter is supplied by the caller, so "wiring to WorkerPool"

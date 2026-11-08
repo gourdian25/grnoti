@@ -30,8 +30,7 @@ const (
 // actually delivering pushes — this interface exists so fcmDispatcher's own
 // logic (batching, retry, error classification, rate-limiter/
 // circuit-breaker wiring) can be tested against a fake, the one deliberate
-// exception to this repo's real-services testing policy. Matches the
-// reference implementation's own justification (fcm.dispatcher.go:26-27).
+// exception to this repo's real-services testing policy.
 type FCMClient interface {
 	SendEachForMulticast(ctx context.Context, message *messaging.MulticastMessage) (*messaging.BatchResponse, error)
 	Send(ctx context.Context, message *messaging.Message) (string, error)
@@ -74,9 +73,8 @@ type FCMDispatcherDeps struct {
 	Config FCMDispatcherConfig
 
 	// RateLimiter, if set, gates every outbound batch/single-send through
-	// Wait before it reaches Client — the reference implementation built a
-	// RateLimiter but never connected it to dispatch at all
-	// (docs/plan/grnoti-plan.md §3.2).
+	// Wait before it reaches Client, so the limit applies to real sends
+	// rather than to a component nothing calls.
 	RateLimiter RateLimiter
 	// CircuitBreaker, if set, wraps every Client call — same §3.2 gap for
 	// CircuitBreaker.
@@ -146,8 +144,8 @@ func NewFCMDispatcher(deps FCMDispatcherDeps) (PushDispatcher, error) {
 
 // Send dispatches msg to every device, deduplicated, grouped by platform,
 // and batched at FCMMaxBatchSize — each platform group's batches are sent
-// concurrently with each other (matching the reference's per-platform
-// goroutine fan-out), while batches within one platform are sent
+// concurrently with each other (one goroutine per platform, since the
+// platforms share no state), while batches within one platform are sent
 // sequentially so a shared RateLimiter/CircuitBreaker sees them one at a
 // time in submission order.
 func (d *fcmDispatcher) Send(ctx context.Context, devices []Device, msg Message) (DispatchResult, error) {
@@ -163,7 +161,7 @@ func (d *fcmDispatcher) Send(ctx context.Context, devices []Device, msg Message)
 	for _, dev := range d.batchSplitter.Deduplicate(devices) {
 		platform := dev.Platform
 		if platform == "" {
-			platform = PlatformAndroid // preserve the reference's "default to Android" fallback for an unset platform
+			platform = PlatformAndroid // an unset platform defaults to Android, the common case
 		}
 		byPlatform[platform] = append(byPlatform[platform], dev)
 	}
@@ -273,9 +271,8 @@ func (d *fcmDispatcher) sendBatchWithRetry(ctx context.Context, devices []Device
 }
 
 // sendBatch sends one batch (<= FCMMaxBatchSize devices), gated through
-// RateLimiter.Wait and wrapped in CircuitBreaker.Execute when configured —
-// the actual wiring the reference implementation built both components for
-// but never connected (docs/plan/grnoti-plan.md §3.2).
+// RateLimiter.Wait and wrapped in CircuitBreaker.Execute when configured:
+// this is the one place both components touch dispatch.
 func (d *fcmDispatcher) sendBatch(ctx context.Context, devices []Device, msg Message, platform Platform) (DispatchResult, error) {
 	var result DispatchResult
 
@@ -643,14 +640,13 @@ func classifyFCMErrorStructured(err error) (code FCMErrorCode, message string, o
 // — used because FCM has no local emulator) cannot construct one, meaning
 // this structured path runs in production but has no dedicated test in
 // this repo. When no structured check matches, classification falls
-// through to substring-matching the error text — the reference
-// implementation's original approach (fcm.dispatcher.go:632-666), kept as
-// the fallback since it's what classifies errors from the fake client in
-// tests, and any other error not shaped like the SDK's internal type (e.g.
-// wrapped/decorated errors). (See docs/plan/grnoti-plan.md §3.3: the
-// reference also had 12 dead ErrFCM* sentinels that never touched this
-// classification at all — those are simply not present in grnoti's
-// errors.go, so there's nothing to remove.)
+// through to substring-matching the error text, kept as the fallback
+// since it's what classifies errors from the fake client in tests, and any
+// other error not shaped like the SDK's internal type (e.g.
+// wrapped/decorated errors). There are deliberately no sentinels per FCM
+// error code in errors.go (ErrFCMClientNil is a construction error, not a
+// delivery one): FCMError.Code is the one FCM error taxonomy, so there is
+// nothing for a second set of sentinels to drift from.
 func classifyFCMError(err error, fid string) *FCMError {
 	if err == nil {
 		return nil

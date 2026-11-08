@@ -73,8 +73,7 @@ func TestDeterministicExperimentEngine_GetVariant_AfterAssignment(t *testing.T) 
 }
 
 // TestDeterministicExperimentEngine_ConcurrentAssignVariant is the
-// falsifying test for the reference implementation's confirmed data race
-// (docs/plan/grnoti-plan.md §2 item 2): many goroutines calling
+// falsifying test for a data race on the engine's maps: many goroutines calling
 // AssignVariant/GetVariant for overlapping users on one engine, run under
 // -race. It must both not race and converge on one consistent assignment
 // per user.

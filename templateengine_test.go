@@ -8,10 +8,8 @@ import (
 )
 
 func TestTemplateEngine_DefaultsHaveNoHardcodedScheme(t *testing.T) {
-	// Regression test for docs/plan/grnoti-plan.md §2 item 8: the reference
-	// implementation hardcoded a "skipp://" deep-link scheme into 8 of 9
-	// default templates. None of grnoti's own defaults may reference any
-	// scheme at all.
+	// Regression test for docs/plan/grnoti-plan.md §2 item 8: none of
+	// grnoti's own defaults may reference any deep-link scheme at all.
 	te := NewTemplateEngine().(*defaultTemplateEngine)
 	te.mu.RLock()
 	defer te.mu.RUnlock()

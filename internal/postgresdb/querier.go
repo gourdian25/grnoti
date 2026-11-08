@@ -51,10 +51,8 @@ type Querier interface {
 	// File: internal/postgresdb/queries/dlq.sql
 	// A single atomic upsert handles both "new failure" (insert) and "another
 	// failure for an event already pending/retrying" (update, via jsonb ||
-	// concatenation onto the existing history) in one write path — see
-	// docs/plan/grnoti-plan.md §3.5 for the defect this design fixes (the
-	// reference implementation had two separate, uncoordinated writers for
-	// these two cases).
+	// concatenation onto the existing history) in one write path, so there
+	// are never two uncoordinated writers for these two cases.
 	UpsertDLQEvent(ctx context.Context, arg UpsertDLQEventParams) error
 	UpsertDevice(ctx context.Context, arg UpsertDeviceParams) error
 	UpsertPreferences(ctx context.Context, arg UpsertPreferencesParams) error

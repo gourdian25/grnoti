@@ -124,9 +124,9 @@ func (r staticLocaleResolver) GetDefaultLocale() string { return r.locale }
 // resolution: BuildMessage resolves the event's target locale, looks up a
 // localized MessageTemplate, and renders it directly via the shared
 // renderMessage path — falling back to baseEngine.BuildMessage if no
-// localized template is registered for the event's type. Unlike the
-// reference implementation, this never constructs a throwaway TemplateEngine
-// per call; see compileTemplate/renderMessage's doc comments.
+// localized template is registered for the event's type. It never
+// constructs a throwaway TemplateEngine per call; see
+// compileTemplate/renderMessage's doc comments.
 //
 // A compiled-template cache (keyed by eventType+locale) avoids re-parsing
 // the same MessageTemplate on every BuildMessage call: LocalizationStore

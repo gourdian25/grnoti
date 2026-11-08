@@ -14,11 +14,10 @@ import "errors"
 // errors.Is(err, grnoti.ErrClosed) directly, consistent with every other
 // gourdian repo's sentinel-error convention.
 //
-// Two sentinels replace error reuse found in the reference implementation
-// (see docs/plan/grnoti-plan.md §2 item 6): ErrNoTargetSpecified used to be
-// ErrInvalidUserID reused for a semantically different condition, and
-// ErrExperimentNotFound/ErrExperimentHasNoVariants used to both be
-// ErrTemplateNotFound reused.
+// Each condition has its own sentinel, never a reused one:
+// ErrNoTargetSpecified is distinct from ErrInvalidUserID, and
+// ErrExperimentNotFound/ErrExperimentHasNoVariants are distinct from
+// ErrTemplateNotFound, so errors.Is never matches a different condition.
 var (
 	// ErrClosed indicates a method was called after Close.
 	ErrClosed = errors.New("grnoti: closed")

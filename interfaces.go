@@ -131,8 +131,8 @@ type ExperimentStore interface {
 }
 
 // ExperimentEngine computes deterministic variant assignment and records
-// impression/conversion analytics. Unlike the reference implementation,
-// this interface takes an *Experiment as input to AssignVariant rather than
+// impression/conversion analytics. This interface takes an *Experiment as
+// input to AssignVariant rather than
 // owning a mutable map of experiment definitions itself — assignment is a
 // pure function of (userID, experiment), so a correct implementation needs
 // no internal synchronization for the assignment computation itself; any
@@ -165,8 +165,7 @@ type ExperimentEngine interface {
 
 	// TrackImpression records that userID was shown variantID of
 	// experimentID, publishing a real analytics event (see
-	// AnalyticsPublisher) — unlike the reference implementation, this is
-	// not a no-op.
+	// AnalyticsPublisher) — never a no-op.
 	TrackImpression(ctx context.Context, userID string, experimentID string, variantID string) error
 
 	// TrackConversion records that userID converted while assigned to
@@ -175,9 +174,8 @@ type ExperimentEngine interface {
 }
 
 // AnalyticsPublisher publishes experiment impression/conversion events for
-// external analysis. New relative to the reference implementation, whose
-// TrackImpression/TrackConversion were hardcoded no-ops — see
-// docs/plan/grnoti-plan.md §2 item 9.
+// external analysis; it is what makes TrackImpression/TrackConversion
+// record something rather than being no-ops.
 type AnalyticsPublisher interface {
 	PublishImpression(ctx context.Context, userID, experimentID, variantID string) error
 	PublishConversion(ctx context.Context, userID, experimentID string) error
@@ -200,9 +198,8 @@ type DLQHandler interface {
 	// transitions each claimed event to DLQStatusRetrying as part of the
 	// same operation — so that N concurrent callers (e.g. N worker
 	// replicas) each claim disjoint events, never the same one twice.
-	// This replaces the reference implementation's GetRetryableEvents,
-	// which was a plain read with no claim semantics at all (see
-	// docs/plan/grnoti-plan.md §1.3, §2 item 4). Every event returned here
+	// A plain read with no claim would let two workers retry the same
+	// event (see docs/plan/grnoti-plan.md §1.3). Every event returned here
 	// must eventually be resolved via MarkRetried — an event claimed but
 	// never marked stays in DLQStatusRetrying until a backend-specific
 	// claim-timeout sweep (if configured) reclaims it.
@@ -309,11 +306,10 @@ type EventProducer interface {
 }
 
 // Metrics receives counters/observations from dispatch and processing.
-// Unlike the reference implementation, the by-type/by-platform variants
-// take both labels together in one call rather than three separate methods
-// that each only populate one label dimension — see
-// docs/plan/grnoti-plan.md §2 item 10 for why the split version
-// triple-counted.
+// The by-type/by-platform variants take both labels together in one call
+// rather than three separate methods that each populate one label
+// dimension: one event split across three calls would be counted three
+// times.
 type Metrics interface {
 	IncNotificationsProcessed()
 	IncNotificationsSent(eventType EventType, platform Platform, count int)
@@ -477,9 +473,8 @@ type NotificationService interface {
 	Submit(ctx context.Context, event Event) error
 
 	// Close stops any background workers (see WorkerPool) this service
-	// owns and releases resources. Idempotent. The reference
-	// implementation's NotificationService had no Close at all — see
-	// docs/plan/grnoti-plan.md §3.1/§3.6 for why this service now owns a
-	// WorkerPool that needs one.
+	// owns and releases resources. Idempotent. The service owns a
+	// WorkerPool, whose workers must be stopped and drained, so it needs
+	// one.
 	Close() error
 }

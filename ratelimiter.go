@@ -19,11 +19,10 @@ import (
 // docs/plan/grnoti-plan.md §1.1 for why the two need different backends
 // rather than both building on grcache.Cache.
 //
-// Unlike the reference implementation, this type's RateLimiter interface
-// does not expose Reserve() *rate.Reservation — that leaked a
+// The RateLimiter interface deliberately does not expose
+// Reserve() *rate.Reservation: that would leak a
 // golang.org/x/time/rate-specific type through the interface, which the
-// Redis-backed variant has no equivalent for (see
-// docs/plan/grnoti-plan.md §3.4).
+// Redis-backed variant has no equivalent for.
 type localRateLimiter struct {
 	limiter *rate.Limiter
 

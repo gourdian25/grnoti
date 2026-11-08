@@ -15,9 +15,9 @@ import (
 // cachedPreferencesStore decorates a durable PreferencesStore with
 // read-through caching against any grcache.Cache, tagging every cached
 // entry with the owning user so a write invalidates exactly that user's
-// cache entry via grcache's InvalidateTag — a natural fit the reference
-// implementation's bespoke Redis/Mongo clients had no equivalent for (see
-// docs/plan/grnoti-plan.md §1.1). The durable store is always the source of
+// cache entry via grcache's InvalidateTag, which a bespoke per-backend
+// client would have to reimplement (see docs/plan/grnoti-plan.md §1.1).
+// The durable store is always the source of
 // truth: a cache read/write failure degrades to hitting the durable store
 // directly, never to a hard failure.
 type cachedPreferencesStore struct {

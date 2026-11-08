@@ -75,11 +75,10 @@ var _ DLQHandler = (*mongoDLQHandler)(nil)
 // backstop independent of PurgeExpiredEvents), and validates connectivity
 // before returning.
 //
-// Claim semantics (see docs/plan/grnoti-plan.md §1.3, §5): unlike the
-// reference implementation's MongoDLQHandler.MarkRetried, which read
-// RetryCount then wrote it back with no guard at all (a confirmed
-// lost-update race under concurrent retries), every write here is scoped
-// by an atomic MongoDB operation — ClaimRetryableEvents uses
+// Claim semantics (see docs/plan/grnoti-plan.md §1.3, §5): reading
+// RetryCount and writing it back from Go would lose updates under
+// concurrent retries, so every write here is scoped by an atomic MongoDB
+// operation — ClaimRetryableEvents uses
 // FindOneAndUpdate per document (atomic per-document claim, no transaction
 // needed), and MarkRetried's retry_count increment is a $inc scoped to
 // {event_id, status: "retrying"} rather than a Go-side read-then-set.
@@ -147,9 +146,8 @@ func (h *mongoDLQHandler) PublishToDLQ(ctx context.Context, event Event, failure
 
 	// A single atomic upsert handles both "new failure" (insert) and
 	// "another failure for an event already pending/retrying" (update) in
-	// one write path — unlike the reference implementation, which had two
-	// separate, uncoordinated writers for these two cases (see
-	// docs/plan/grnoti-plan.md §3.5).
+	// one write path, so there are never two uncoordinated writers racing
+	// on the same event.
 	_, err := h.collection.UpdateOne(ctx,
 		bson.M{"event_id": event.EventID},
 		bson.M{

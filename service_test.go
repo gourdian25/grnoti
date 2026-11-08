@@ -398,8 +398,8 @@ func (r errorTopicRouter) ResolveTarget(context.Context, Event) (NotificationTar
 
 // TestProcessEvent_TopicRouter_ResolveTargetError proves dispatch's
 // TopicRouter-error branch without asserting a top-level ProcessEvent
-// error: per processEvent's own documented contract (matching the
-// reference implementation), a dispatch-level error doesn't abort the
+// error: per processEvent's own documented contract, a dispatch-level
+// error doesn't abort the
 // pipeline or propagate as an error — it's logged, and the event still
 // gets marked processed with a zero-valued DispatchResult.
 func TestProcessEvent_TopicRouter_ResolveTargetError(t *testing.T) {

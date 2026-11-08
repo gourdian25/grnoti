@@ -27,7 +27,7 @@ statement is already atomic).
 `github.com/gourdian25/grnoti`.
 
 **Behavioral reference (spec, not code to port verbatim):**
-`~/Dev/skipptech/skipp.app.shared.golang.library/grnoti` — 22 files, 7,166
+a private push-notification package — 22 files, 7,166
 lines, a working but untested single-package push-notification service
 currently embedded in a shared library. Read end-to-end for this plan (see
 §0).
@@ -188,7 +188,7 @@ All confirmed via direct code read, file:line references into the *source*.
 | 5 | Hard `*grlog.Logger` (concrete type) threaded through every constructor | all 11 storage/dispatch files, e.g. `service.go:18,33,57`; `preferences.mongo.go:21,25` (not nil-checked — panics on first use if `nil`) | Structural `Logger` interface (`Infof`/`Warnf`/`Errorf`) + `NopLogger()`/`OrNop()`, matching every sibling repo verbatim. `*grlog.Logger` used only in test files. |
 | 6 | Sentinel error reuse hiding real error classes | `types.go:104` (`ErrInvalidUserID` reused for "no target specified," source's own comment admits it); `experiment.go:72,93` (`ErrTemplateNotFound` reused for "experiment not found" *and* "experiment has no variants") | New sentinels: `ErrNoTargetSpecified`, `ErrExperimentNotFound`, `ErrExperimentHasNoVariants`. See also §3.3 (12 dead sentinels, two disconnected FCM-error taxonomies). |
 | 7 | No distributed rate limiting — `golang.org/x/time/rate` is per-process; N replicas each enforce the full FCM quota independently | `ratelimiter.go:11,56,90` (no redis, no network I/O in the file) | Raw-Redis Lua/`INCR`-based distributed token bucket (§1.1). Local per-process limiter stays as the default/dev option. |
-| 8 | Skipp-specific coupling: hardcoded `skipp://` scheme, ~130 e-commerce `EventType` constants in the core package | `template.engine.go` (8 of 9 default templates); `event.types.complete.go` (136 constants, one 175-line block) | Generic vocabulary + `EventTypeCustom` + a real `EventTypeRegistry` (§5), replacing 8 copy-pasted trait switch statements with one data table. Skipp's catalog moves to a consumer-side package, not `example/`. |
+| 8 | Application-specific coupling: a hardcoded deep-link scheme, ~130 e-commerce `EventType` constants in the core package | `template.engine.go` (8 of 9 default templates); `event.types.complete.go` (136 constants, one 175-line block) | Generic vocabulary + `EventTypeCustom` + a real `EventTypeRegistry` (§5), replacing 8 copy-pasted trait switch statements with one data table. The application's catalog moves to a consumer-side package, not `example/`. |
 | 9 | No-op A/B analytics: `TrackImpression`/`TrackConversion` unconditionally `return nil` | `experiment.go:125-137`, comments say "placeholder" | New Kafka **producer** (source only ever consumes Kafka — new scope) publishes real impression/conversion events. Swappable for a grevents publish later per §1.2. |
 | 10 | Prometheus label triple-counting: `IncNotificationsSent`/`Failed` write into the *same* two-label `CounterVec` three ways (unlabeled, by-type, by-platform), silently triple-counting on `sum()` | `metrics.prometheus.go:76-136` | Collapse into one call taking both labels together: `IncNotificationsSent(eventType EventType, platform Platform, count int)`. |
 
@@ -279,7 +279,7 @@ grnoti/
 │                           # IdempotencyRecord, NotificationPreferences, NotificationAction,
 │                           # Priority, Platform
 ├── eventtypes.go            # EventType, EventTypeCustom, EventTypeRegistry (§5) — generic
-│                           # vocabulary only, not the 130-constant Skipp catalog
+│                           # vocabulary only, not a 130-constant application catalog
 ├── errors.go                 # sentinels, post-cleanup (§3.3)
 ├── logger.go                  # Logger interface + NopLogger/OrNop
 ├── docs.go                     # godoc only
@@ -453,7 +453,7 @@ only.
 `circuitbreaker.go`, `workerpool.go`, `ratelimiter.go` (local token bucket),
 `retrystrategy.go` (Full-Jitter, §1.2), `batchsplitter.go`,
 `payloadvalidator.go`, `templateengine.go` (generic templates, no
-`skipp://`), `localization.go` (in-memory default), `topicrouter.go`,
+deep-link scheme), `localization.go` (in-memory default), `topicrouter.go`,
 `experiment.go` (stateless assignment function, §2 item 2). Each is
 independently unit-testable with no live services — table-driven tests,
 `-race` from day one since this is exactly the layer that had the

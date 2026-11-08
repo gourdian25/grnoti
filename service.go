@@ -30,9 +30,8 @@ type ServiceDeps struct {
 	TopicRouter TopicRouter
 	// DLQHandler, if set and Config.EnableDLQ, receives events whose
 	// dispatch has unresolved failures after the dispatcher's own retry
-	// is exhausted — the reference implementation built a whole DLQ
-	// subsystem nothing ever called (docs/plan/grnoti-plan.md §3.6); this
-	// is that missing call.
+	// is exhausted, so a failed delivery is kept for retry rather than
+	// only logged.
 	DLQHandler DLQHandler
 	// EventBus, if set and Config.EnableEventBus, receives
 	// TopicNotificationSent/TopicNotificationFailed lifecycle events (see
@@ -59,9 +58,8 @@ type ServiceDeps struct {
 // notificationService implements NotificationService: validates an Event,
 // checks idempotency and preferences, renders it, resolves recipients,
 // dispatches, and records the outcome. See ProcessEvent's own doc comment
-// for the full pipeline and how it differs from the reference
-// implementation's ordering (docs/plan/grnoti-plan.md's Stage 12
-// implementation log).
+// for the full pipeline and why it is ordered that way
+// (docs/plan/grnoti-plan.md's Stage 12 implementation log).
 type notificationService struct {
 	deviceStore DeviceStore
 	dispatcher  PushDispatcher
@@ -194,21 +192,19 @@ func (s *notificationService) Close() error {
 //	Resolve target -> Dispatch -> Mark invalid FIDs -> DLQ ->
 //	Metrics -> Lifecycle events -> Mark processed
 //
-// Two ordering changes from the reference implementation
-// (docs/plan/grnoti-plan.md's Stage 12 implementation log has the full
-// account):
+// Two ordering choices matter (docs/plan/grnoti-plan.md's Stage 12
+// implementation log has the full account):
 //
-//  1. Idempotency now runs before the preferences check, not after. The
-//     reference paid for a full PreferencesStore round-trip on every
-//     redelivered duplicate (e.g. Kafka at-least-once redelivery) before
-//     ever discovering the event didn't need any work at all — idempotency
-//     is the cheaper, more decisive check and should short-circuit first.
-//  2. DLQHandler.PublishToDLQ is now actually called. The reference built
-//     the entire DLQ subsystem but never wired it into ProcessEvent at all
-//     (§3.6) — a dispatch that exhausted the dispatcher's own retries
-//     (Stage 10) was logged and nothing more. Here, any dispatch failure
-//     not accounted for by an already-marked-invalid FID is published to
-//     the DLQ when Config.EnableDLQ is set.
+//  1. Idempotency runs before the preferences check. Otherwise every
+//     redelivered duplicate (e.g. Kafka at-least-once redelivery) would pay
+//     for a full PreferencesStore round-trip before discovering the event
+//     needs no work at all — idempotency is the cheaper, more decisive
+//     check and should short-circuit first.
+//  2. DLQHandler.PublishToDLQ is part of the pipeline. A dispatch that
+//     exhausted the dispatcher's own retries (Stage 10) would otherwise be
+//     logged and nothing more. Here, any dispatch failure not accounted for
+//     by an already-marked-invalid FID is published to the DLQ when
+//     Config.EnableDLQ is set.
 func (s *notificationService) processEvent(ctx context.Context, event Event) (ProcessingResult, error) {
 	startTime := time.Now()
 	result := ProcessingResult{
@@ -267,8 +263,8 @@ func (s *notificationService) processEvent(ctx context.Context, event Event) (Pr
 	}
 
 	if dispatchErr != nil {
-		// Matches the reference: a dispatch-level error doesn't abort the
-		// pipeline. dispatchResult (returned alongside it per
+		// A dispatch-level error doesn't abort the pipeline.
+		// dispatchResult (returned alongside it per
 		// PushDispatcher.Send's contract) still carries whatever
 		// partial/total-failure detail there is, so DLQ/metrics/mark-
 		// processed below all still run on real data instead of being
@@ -311,8 +307,8 @@ func (s *notificationService) skip(result ProcessingResult, startTime time.Time,
 // dispatch resolves event's target (topic or devices, honoring TopicRouter
 // when configured) and sends msg, updating result.DeviceCount along the
 // way. A topic-based dispatch reports a synthetic 1-success/1-failure
-// DispatchResult, matching the reference, since FCM's topic-send API
-// reports no per-recipient detail at all (see PushDispatcher.SendToTopic's
+// DispatchResult, since FCM's topic-send API reports no per-recipient
+// detail at all (see PushDispatcher.SendToTopic's
 // own doc comment).
 func (s *notificationService) dispatch(ctx context.Context, event Event, msg Message, result *ProcessingResult) (DispatchResult, error) {
 	if s.topicRouter != nil && s.config.EnableTopicRouting {

@@ -106,10 +106,8 @@ func (s *memoryDeviceStore) DeleteDevice(_ context.Context, fid string) error {
 
 func (s *memoryDeviceStore) Close() error { return nil }
 
-// memoryPreferencesStore is an in-memory PreferencesStore. Unlike the
-// reference implementation's InMemoryPreferencesStore — whose map was
-// mutated with zero synchronization (see docs/plan/grnoti-plan.md §2 item
-// 3) — every access here is protected by a real sync.RWMutex.
+// memoryPreferencesStore is an in-memory PreferencesStore. Every access is
+// protected by a real sync.RWMutex, since concurrent workers share it.
 type memoryPreferencesStore struct {
 	mu    sync.RWMutex
 	byUID map[string]*NotificationPreferences

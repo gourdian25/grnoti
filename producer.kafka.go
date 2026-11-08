@@ -61,10 +61,8 @@ type KafkaAnalyticsPublisherConfig struct {
 	Logger Logger
 }
 
-// kafkaAnalyticsPublisher is a Kafka-backed AnalyticsPublisher — new
-// relative to the reference implementation, whose TrackImpression/
-// TrackConversion were hardcoded no-ops (docs/plan/grnoti-plan.md §2 item
-// 9). Messages are keyed by userID so one user's impression/conversion
+// kafkaAnalyticsPublisher is a Kafka-backed AnalyticsPublisher. Messages
+// are keyed by userID so one user's impression/conversion
 // events land on the same partition, giving per-user ordering.
 type kafkaAnalyticsPublisher struct {
 	producer        sarama.SyncProducer
