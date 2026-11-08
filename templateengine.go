@@ -119,11 +119,9 @@ func (te *defaultTemplateEngine) BuildMessage(event Event) (Message, error) {
 // compiledTemplate. Shared by defaultTemplateEngine.RegisterTemplate and
 // localization.go's LocalizedTemplateEngine, so a localized MessageTemplate
 // is compiled once per registration, not re-parsed on every BuildMessage
-// call — the reference implementation's LocalizedTemplateEngine
-// constructed and fully re-registered a brand-new TemplateEngine (all 9
-// default templates included) on every single BuildMessage call just to
-// render one localized template; see docs/plan/grnoti-plan.md's research
-// notes on localization.go.
+// call. Building and re-registering a whole TemplateEngine (all 9 default
+// templates included) per BuildMessage just to render one localized
+// template would waste work on every message.
 func compileTemplate(eventType EventType, tmpl MessageTemplate) (*compiledTemplate, error) {
 	titleTmpl, err := template.New("title").Parse(tmpl.TitleTemplate)
 	if err != nil {

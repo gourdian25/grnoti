@@ -124,8 +124,7 @@ func (e Event) GetTargetID() string {
 // Returns:
 //   - error: ErrInvalidEventID, ErrNoTargetSpecified, ErrInvalidFID,
 //     ErrInvalidEventType, or ErrInvalidPriority — each a distinct sentinel
-//     for a distinct condition (the reference implementation reused one
-//     sentinel for two of these; see docs/plan/grnoti-plan.md §2 item 6)
+//     for a distinct condition, so errors.Is never matches the wrong one
 func (e Event) Validate() error {
 	switch {
 	case e.EventID == "":
@@ -477,9 +476,9 @@ type WorkerPoolStats struct {
 }
 
 // ServiceConfig configures a NotificationService's optional behaviors. All
-// Enable* flags default to false ("disabled by default for predictability
-// and backward compatibility" — matching the reference implementation's own
-// convention) except where DefaultServiceConfig says otherwise.
+// Enable* flags default to false (disabled by default for predictability
+// and backward compatibility) except where DefaultServiceConfig says
+// otherwise.
 type ServiceConfig struct {
 	// IdempotencyTTL is how long a processed event's ID is remembered by
 	// IdempotencyStore before it could be reprocessed if redelivered again.
@@ -530,11 +529,9 @@ type ServiceConfig struct {
 	EnableBackpressure bool
 	EnableABTesting    bool
 	// EnableDLQ gates whether ProcessEvent publishes exhausted-retry
-	// dispatch failures to the configured DLQHandler. The reference
-	// implementation had no such wiring at all (see
-	// docs/plan/grnoti-plan.md §3.6) — this flag exists so the fix is
-	// opt-in-by-default-on rather than silently always-on, matching how
-	// every other integration point in this config is a flag.
+	// dispatch failures to the configured DLQHandler. It is a flag, on by
+	// default, rather than silently always-on, matching how every other
+	// integration point in this config is a flag.
 	EnableDLQ bool
 	// EnableEventBus gates whether ProcessEvent/ExperimentEngine publish
 	// lifecycle events via the configured grevents.Bus (see

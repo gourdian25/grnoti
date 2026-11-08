@@ -144,8 +144,7 @@ func TestMemoryPreferencesStore_IsEventTypeEnabled_PerTypeOptOut(t *testing.T) {
 }
 
 // TestMemoryPreferencesStore_ConcurrentAccess is the falsifying test for
-// the reference implementation's confirmed data race on
-// InMemoryPreferencesStore (docs/plan/grnoti-plan.md §2 item 3): many
+// a data race on the in-memory preferences map: many
 // goroutines reading and writing preferences for overlapping users, under
 // -race.
 func TestMemoryPreferencesStore_ConcurrentAccess(t *testing.T) {

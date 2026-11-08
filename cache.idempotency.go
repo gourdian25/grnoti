@@ -13,9 +13,9 @@ import (
 
 // cacheIdempotencyStore implements IdempotencyStore as a thin adapter over
 // any grcache.Cache — Get/Exists/Set with a TTL is all IsProcessed/
-// MarkProcessed actually need, so one adapter here replaces what the
-// reference implementation wrote as two separate ~150-400 line hand-rolled
-// Redis and Mongo clients (see docs/plan/grnoti-plan.md §1.1). Backend
+// MarkProcessed actually need, so one adapter here does the job without
+// hand-rolled Redis and Mongo clients of grnoti's own (see
+// docs/plan/grnoti-plan.md §1.1). Backend
 // choice becomes "which grcache.Cache the caller constructs and passes
 // in" (grcache.NewRedisCache, grcache.NewMongoCache, grcache.NewMemoryCache,
 // ...), not "which

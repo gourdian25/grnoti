@@ -1,9 +1,8 @@
 # grnoti architecture
 
-This document records how grnoti is put together and *why*, with particular
-attention to where it deliberately diverges from the reference
-implementation it was built from (see [docs/plan/grnoti-plan.md](plan/grnoti-plan.md)
-for the stage-by-stage account these decisions were made in). It is a
+This document records how grnoti is put together and *why* (see
+[docs/plan/grnoti-plan.md](plan/grnoti-plan.md) for the stage-by-stage
+account these decisions were made in). It is a
 design reference, not a tutorial — see the [README](../README.md) for a
 quickstart and [example/main.go](../example/main.go) for a runnable,
 narrated walkthrough.
@@ -82,10 +81,9 @@ is the entire Kafka-to-processing wiring. When the service is constructed
 with `ServiceConfig.EnableBackpressure`, `Submit` enqueues onto the
 service's own internal `*WorkerPool` (non-blocking, `ErrWorkerPoolFull` on
 a full queue) instead of processing on the ingestion goroutine; otherwise
-it's `ProcessEvent` with the `ProcessingResult` discarded. The reference
-implementation had `EventConsumer` call `ProcessEvent` directly with no
-queue and no backpressure at all — an ingestion burst had nowhere to go
-but straight into synchronous processing.
+it's `ProcessEvent` with the `ProcessingResult` discarded. Without the
+queue, an ingestion burst would have nowhere to go but straight into
+synchronous processing.
 
 `EventProducer` (`NewKafkaEventProducer`) is the upstream half, for the
 services that emit events. It runs `Event.Validate` on every event before
@@ -100,10 +98,9 @@ re-published one.
 
 `FCMDispatcherDeps.RateLimiter`/`CircuitBreaker`, when set, gate every
 outbound FCM batch/single-send (`sendBatch`, `SendToDevice`, `SendToTopic`
-in `dispatcher.fcm.go`). The reference implementation built both
-components in full but never connected either to the actual dispatch
-path — they existed and were tested in isolation, but a real FCM outage
-would never have tripped the breaker or been rate-limited.
+in `dispatcher.fcm.go`). Both sit on the actual dispatch path, not
+beside it: a component tested only in isolation would never trip the
+breaker or rate-limit anything during a real FCM outage.
 
 ### 3.3 Two independent batching layers that compose, not conflict
 
@@ -118,8 +115,8 @@ still batches internally at its own fixed limit.
 
 ### 3.4 `RateLimiter` has no `Reserve()`
 
-Unlike the reference implementation, this package's `RateLimiter`
-interface does not expose `Reserve() *rate.Reservation` — that leaked a
+This package's `RateLimiter` interface deliberately does not expose
+`Reserve() *rate.Reservation` — that would leak a
 `golang.org/x/time/rate`-specific type through the interface, which
 `redisRateLimiter` (the distributed variant, backed by a Lua token-bucket
 script, not `x/time/rate` at all) has no equivalent for. `Allow`/`Wait` are
@@ -131,9 +128,9 @@ Variant assignment (`deterministicPick` in `experiment.go`) is a pure,
 deterministic function of `(userID, experiment.ID, experiment.Variants)` —
 the same inputs always produce the same variant, with or without an
 assignment cache in front of it. This is split from `ExperimentStore`
-(Postgres/in-memory CRUD for `Experiment` definitions themselves), unlike
-the reference implementation's single mutable-map type that conflated
-"define an experiment" with "remember who got which variant." Two
+(Postgres/in-memory CRUD for `Experiment` definitions themselves), so
+"define an experiment" and "remember who got which variant" are never
+conflated in one mutable-map type. Two
 `ExperimentEngine` implementations exist purely as a performance choice
 for where the assignment cache lives: `deterministicExperimentEngine`
 (an in-process map guarded by a `sync.RWMutex`) for single-instance
@@ -147,10 +144,10 @@ correctness dependency.
 
 ### 3.6 `DLQHandler.ClaimRetryableEvents`: atomic claim, not a plain read
 
-The reference implementation's `GetRetryableEvents` was a plain read with
-no claim semantics — two concurrent workers could read and retry the same
-failed event simultaneously. `ClaimRetryableEvents` (a deliberate,
-breaking rename to make the contract explicit) atomically transitions
+A plain read with no claim semantics would let two concurrent workers
+read and retry the same failed event simultaneously.
+`ClaimRetryableEvents` (named to make the contract explicit) atomically
+transitions
 every event it returns to `DLQStatusRetrying` as part of the same
 operation: Postgres does this with a single `SELECT ... FOR UPDATE SKIP
 LOCKED`-based `UPDATE` statement (all-or-nothing — a mid-claim error
@@ -165,8 +162,8 @@ when `err != nil`, since there is no reclaim-timeout sweep in this
 package to recover an abandoned claim otherwise.
 
 `NotificationService` never calls `ClaimRetryableEvents` itself — it's a
-public API for an external retry-worker process to call periodically,
-exactly like the reference. `service.go`'s own wiring
+public API for an external retry-worker process to call periodically.
+`service.go`'s own wiring
 (`publishToDLQIfUnresolved`) only ever calls `PublishToDLQ`.
 
 ### 3.7 DLQ durability vs. `grevents.DeadLetterSink`
@@ -186,8 +183,8 @@ all nil-safe and only log a warning on failure).
 
 `cache.idempotency.go`, `cache.preferences.go` (read-through), and
 `cache.experiment.go` (assignment cache) are all thin adapters over any
-`grcache.Cache` — the reference implementation instead hand-wrote separate
-~150-400 line Redis and Mongo clients for idempotency alone. Backend
+`grcache.Cache`, rather than separate hand-written Redis and Mongo clients
+for each concern. Backend
 choice for these three concerns becomes "which `grcache.Cache` the caller
 constructs and passes in" (`grcache.NewRedisCache`,
 `grcache.NewMemoryCache`, ...), not
@@ -199,11 +196,11 @@ idempotency) — never a silent correctness gap.
 ### 3.9 Distinct sentinel errors, not reused ones
 
 `ErrNoTargetSpecified`, `ErrExperimentNotFound`, and
-`ErrExperimentHasNoVariants` are each their own sentinel. The reference
-implementation reused `ErrInvalidUserID` for the semantically different
-"event has no target at all" condition, and reused `ErrTemplateNotFound`
-for both "no experiment with this ID" and "experiment has no variants" —
-two unrelated failure modes collapsed into one error a caller's
+`ErrExperimentHasNoVariants` are each their own sentinel. Reusing
+`ErrInvalidUserID` for the semantically different "event has no target at
+all" condition, or `ErrTemplateNotFound` for both "no experiment with this
+ID" and "experiment has no variants", would collapse unrelated failure
+modes into one error a caller's
 `errors.Is` check couldn't distinguish.
 
 ### 3.10 Templates: no hardcoded scheme, compiled once per registration
@@ -214,12 +211,11 @@ generic library default. Consumers register their own application-specific templ
 their own deep-link scheme) via `RegisterTemplate`.
 `localizedTemplateEngine` (the locale-aware decorator, `localization.go`)
 compiles a localized `MessageTemplate` once, at registration time, and
-reuses the compiled form on every `BuildMessage` call — the reference
-implementation's equivalent constructed and fully re-registered a brand
-new `TemplateEngine`, all default templates included, on every single
-`BuildMessage` call just to render one localized message.
+reuses the compiled form on every `BuildMessage` call, rather than
+building and re-registering a whole `TemplateEngine`, all default
+templates included, per call just to render one localized message.
 
-### 3.11 FCM error classification: two-tier, dead sentinels dropped
+### 3.11 FCM error classification: two-tier, no per-code sentinels
 
 `classifyFCMError` (`dispatcher.fcm.go`) classifies a raw FCM SDK error
 into a small `FCMErrorCode` enum using a two-tier approach. First,
@@ -235,15 +231,13 @@ are what real production errors from `client.Send`/
 real-services testing policy since FCM has no local emulator) can never
 construct one — meaning the structured path runs in production but has no
 dedicated test in this repo. When no structured check matches,
-classification falls through to substring-matching the error text — the
-reference implementation's original approach, kept as the fallback since
-it's what classifies errors from the fake client in tests, and any other
-error not shaped like the SDK's internal type (e.g. wrapped/decorated
-errors). This is a strictly additive change: the fallback path, and every
-existing test that exercises it, is unchanged. The reference also declared
-12 `ErrFCM*` sentinel errors that this classification never touched at
-all; those simply don't exist in `errors.go` here — there was nothing to
-remove because they were never added.
+classification falls through to substring-matching the error text, kept
+as the fallback since it's what classifies errors from the fake client in
+tests, and any other error not shaped like the SDK's internal type (e.g.
+wrapped/decorated errors). There are deliberately no sentinels per FCM
+error code in `errors.go` (`ErrFCMClientNil` is a construction error, not
+a delivery one): `FCMError.Code` is the one taxonomy, so a second set of
+sentinels would only drift from it.
 
 ### 3.12 Postgres via pgx/v5 + sqlc, not GORM
 
@@ -339,13 +333,6 @@ emulator to run against. This is a stronger bar than typical
 interface-mocking unit tests, and it caught real, previously-latent bugs
 that code review alone did not — most notably:
 
-- The reference implementation had a confirmed data race in its
-  experiment-assignment map under concurrent access (see §2 item 2 in the
-  plan doc); `experiment.go` was designed to avoid it from the start, and
-  `TestDeterministicExperimentEngine_ConcurrentAssignVariant` is the
-  falsifying test run under `-race` with real concurrent goroutines that
-  proves grnoti's own design doesn't reproduce it — the kind of guarantee
-  a single-threaded review can't provide either way.
 - `eventTypeTopicRouter`/`deviceOnlyRouter`'s device-resolution fallback
   silently dropped anonymous and direct-FID events when topic routing
   was enabled — invisible until an actual end-to-end pipeline test wired
@@ -354,6 +341,12 @@ that code review alone did not — most notably:
   per-FID failure, silently abandoning a *total* request-level failure
   after one attempt — only visible once a fake client was made to return
   a real total-failure error across a real retry loop.
+
+Concurrency is held to the same bar: the experiment-assignment map is
+shared by concurrent workers, so `experiment.go` locks it from the start,
+and `TestDeterministicExperimentEngine_ConcurrentAssignVariant` runs real
+concurrent goroutines under `-race` to prove it never races — the kind of
+guarantee a single-threaded review can't provide either way.
 
 See `docs/plan/grnoti-plan.md`'s §11 implementation log for the full,
 stage-by-stage account of every bug found this way, plus the three found

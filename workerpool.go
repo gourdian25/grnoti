@@ -15,11 +15,10 @@ var ErrWorkerPoolFull = errors.New("grnoti: worker pool queue is full")
 
 // WorkerPool is the bridge between event ingestion (EventConsumer) and
 // event processing (NotificationService.ProcessEvent), decoupling the two
-// via a bounded, non-blocking queue. Unlike the reference implementation
-// (see docs/plan/grnoti-plan.md §3.1), grnoti's EventConsumer and
-// NotificationService are wired through a WorkerPool by default — an
-// ingestion handler that calls ProcessEvent directly, with no queue in
-// between, is exactly the gap this type exists to close.
+// via a bounded, non-blocking queue. grnoti's EventConsumer and
+// NotificationService are wired through a WorkerPool by default: an
+// ingestion handler that called ProcessEvent directly, with no queue in
+// between, would tie ingestion speed to delivery speed.
 //
 // WorkerPool is deliberately a concrete type, not an interface — it has
 // exactly one implementation and no swappable backend, matching

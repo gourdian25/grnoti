@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.5.1] - 2026-11-08
+
+### Changed
+
+- Licence: standard MIT text, copyright holder Manish Kumar. No change to the terms granted.
+- Code comments, `docs/architecture.md` and the SQL query comments state each design choice by its own reason.
+- Comments and docs no longer name a specific application's deep-link scheme or internal code.
+- README: corrected the grpolicy description.
+- Dependencies: grcache v0.6.1, grevents v0.2.1, grlog v0.1.3.
+
 ## [0.5.0] - 2026-10-22
 
 Additive: no existing call needs to change. A Kafka event producer
@@ -307,8 +317,7 @@ ahead of grnoti's own Postgres stores getting a real consumer.
 - `example/main.go`: a complete, runnable, dependency-free walkthrough
   (`go run ./example`).
 - `docs/architecture.md`: interface/backend matrix and the reasoning
-  behind every major design decision, including where and why this
-  package diverges from its reference implementation.
+  behind every major design decision.
 - `CLAUDE.md`: backend setup, test scoping, and repo conventions.
 - `make precommit`/`make prerelease` targets.
 
