@@ -5,9 +5,9 @@ go 1.26.4
 require (
 	firebase.google.com/go/v4 v4.22.0
 	github.com/IBM/sarama v1.61.0
-	github.com/gourdian25/grcache v0.6.0
-	github.com/gourdian25/grevents v0.2.0
-	github.com/gourdian25/grlog v0.1.2
+	github.com/gourdian25/grcache v0.6.1
+	github.com/gourdian25/grevents v0.2.1
+	github.com/gourdian25/grlog v0.1.3
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/redis/go-redis/v9 v9.22.0
 	go.mongodb.org/mongo-driver/v2 v2.9.1
