@@ -322,6 +322,53 @@ token is far longer and never matches. The `fid` column keeps its generous
 width on purpose: the format check lives in Go alone, so a change to it
 never needs a schema migration in a consumer.
 
+### 3.14 The consumer never commits past a message it didn't handle (v0.6.0)
+
+A consumer group commits one offset per partition, so marking message n + 1
+commits every message before it. v0.5.x marked a message that wouldn't decode
+and skipped one whose handler failed, and the next message's mark then
+committed past it: both were lost for good. Since v0.6.0 each message is:
+
+1. decoded; one that won't decode never will, so it skips step 2;
+2. handled, and handled again with backoff while it fails
+   (`KafkaConsumerConfig.Retry`, `DefaultConsumerRetryPolicy`: five attempts,
+   500 ms doubling);
+3. if it still fails, written to `KafkaDLQTopic(<topic>)` (`<topic>.dlq`) as
+   it came, with `grnoti-error`, `grnoti-original-topic`, `-partition`,
+   `-offset` and `-attempts` headers, through the caller's `DLQProducer`
+   (required, never closed by grnoti);
+4. only then marked.
+
+A dead-letter write that fails stops the partition: the session ends with
+nothing marked past the message, and after `HaltPause` a new one starts from
+the committed offset. A session that ends mid-retry leaves the message
+unmarked. A handler answering `ErrClosed` (the service has shut down) leaves
+it unmarked and ends `Start` with that error, rather than rejoining to be
+refused in a loop. A handler's panic is a failure; its type alone is logged.
+Delivery is at least once, so a handler is idempotent (`NotificationService`
+is, by `EventID`).
+
+This is a Kafka dead-letter topic, not `DLQHandler`: `DLQHandler` stores an
+`Event` whose delivery failed, while a message that won't decode has no
+`Event` at all; the topic takes the bytes as they came.
+
+`NewKafkaAnalyticsPublisher`'s default producer is idempotent since v0.6.0
+(`Producer.Idempotent`, one request in flight, `WaitForAll`; v0.5.x acked
+`WaitForLocal`).
+
+### 3.15 `SkipIndexCreation`: when migrations own the collections (v0.6.0)
+
+Each Mongo store (`MongoDeviceStoreConfig`, `MongoPreferencesStoreConfig`,
+`MongoDLQHandlerConfig`) creates its indexes on connect by default. A
+deployment whose migrations own the collections, and whose application user
+has no `createIndex` (grsentry's), sets `SkipIndexCreation`: the constructor
+then creates nothing and checks through `listIndexes` that every index it
+relies on exists (`ensureMongoIndexes`, `indexes.mongo.go`): the same keys in
+the same order, the same uniqueness and the same TTL, whatever its name. One
+missing or weaker is `ErrMongoIndexMissing`, so a uniqueness a store relies
+on (one device per FID, one preferences document per user, one DLQ record
+per event) is never silently absent. The user then needs `listIndexes`.
+
 ## 4. Testing philosophy
 
 Every backend is tested against a real local instance — Docker containers

@@ -49,9 +49,11 @@ type KafkaAnalyticsPublisherConfig struct {
 	ImpressionTopic string
 	// ConversionTopic defaults to DefaultConversionTopic if empty.
 	ConversionTopic string
-	// SaramaConfig, if nil, defaults to a config with
-	// Producer.Return.Successes=true (required for SyncProducer) and
-	// Producer.RequiredAcks=WaitForLocal. A caller-supplied SaramaConfig
+	// SaramaConfig, if nil, defaults to defaultAnalyticsSaramaConfig: an
+	// idempotent producer (Producer.Idempotent, one request in flight,
+	// RequiredAcks=WaitForAll), so a retried send never writes an event
+	// twice and an acknowledged one survives the leader's loss (v0.6.0;
+	// v0.5.x acked WaitForLocal, not idempotent). A caller-supplied SaramaConfig
 	// must set Producer.Return.Successes itself — sarama.NewSyncProducer
 	// errors explicitly if it doesn't, rather than this constructor
 	// silently patching caller-owned config.
@@ -76,6 +78,23 @@ type kafkaAnalyticsPublisher struct {
 
 var _ AnalyticsPublisher = (*kafkaAnalyticsPublisher)(nil)
 
+// defaultAnalyticsSaramaConfig is the analytics publisher's sarama config
+// when the caller gives none: idempotent, every in-sync replica's
+// acknowledgement, and Return.Successes (a SyncProducer needs it).
+// Idempotence needs Kafka 0.11 or later, one request in flight and retries.
+func defaultAnalyticsSaramaConfig() *sarama.Config {
+	c := sarama.NewConfig()
+	c.Version = sarama.V3_0_0_0
+	c.Producer.Return.Successes = true
+	c.Producer.RequiredAcks = sarama.WaitForAll
+	c.Producer.Idempotent = true
+	c.Net.MaxOpenRequests = 1
+	if c.Producer.Retry.Max < 1 {
+		c.Producer.Retry.Max = 5
+	}
+	return c
+}
+
 // NewKafkaAnalyticsPublisher builds a sarama.SyncProducer from cfg —
 // synchronous rather than async so PublishImpression/PublishConversion's
 // error return reflects an actual broker ack, not just a local enqueue.
@@ -95,10 +114,7 @@ func NewKafkaAnalyticsPublisher(cfg KafkaAnalyticsPublisherConfig) (AnalyticsPub
 
 	saramaCfg := cfg.SaramaConfig
 	if saramaCfg == nil {
-		saramaCfg = sarama.NewConfig()
-		saramaCfg.Version = sarama.V3_0_0_0
-		saramaCfg.Producer.Return.Successes = true
-		saramaCfg.Producer.RequiredAcks = sarama.WaitForLocal
+		saramaCfg = defaultAnalyticsSaramaConfig()
 	}
 
 	producer, err := sarama.NewSyncProducer(cfg.Brokers, saramaCfg)

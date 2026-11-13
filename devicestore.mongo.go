@@ -54,6 +54,20 @@ type MongoDeviceStoreConfig struct {
 	// Logger receives optional diagnostic messages. A nil Logger disables
 	// logging.
 	Logger Logger
+	// SkipIndexCreation, when set, makes the constructor create no index
+	// and instead check (listIndexes) that every index the store relies on
+	// exists, failing with ErrMongoIndexMissing when one doesn't: for a
+	// deployment whose migrations own the collection and whose application
+	// user has no createIndex. That user then needs listIndexes on it.
+	SkipIndexCreation bool
+}
+
+// deviceIndexes are the device store's indexes: one device per FID, and a
+// user's or an anonymous visitor's active devices.
+var deviceIndexes = []mongoIndex{
+	{keys: bson.D{{Key: "fid", Value: 1}}, unique: true},
+	{keys: bson.D{{Key: "user_id", Value: 1}, {Key: "is_active", Value: 1}}},
+	{keys: bson.D{{Key: "anonymous_id", Value: 1}, {Key: "is_active", Value: 1}}},
 }
 
 type mongoDeviceStore struct {
@@ -97,13 +111,9 @@ func NewMongoDeviceStore(cfg MongoDeviceStoreConfig) (DeviceStore, error) {
 	}
 
 	collection := client.Database(cfg.Database).Collection(collName)
-	if _, err := collection.Indexes().CreateMany(connectCtx, []mongo.IndexModel{
-		{Keys: bson.D{{Key: "fid", Value: 1}}, Options: options.Index().SetUnique(true)},
-		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "is_active", Value: 1}}},
-		{Keys: bson.D{{Key: "anonymous_id", Value: 1}, {Key: "is_active", Value: 1}}},
-	}); err != nil {
+	if err := ensureMongoIndexes(connectCtx, collection, deviceIndexes, cfg.SkipIndexCreation); err != nil {
 		_ = client.Disconnect(context.Background())
-		return nil, fmt.Errorf("grnoti/mongo: ensure indexes: %w", err)
+		return nil, err
 	}
 
 	logger.Info("grnoti/mongo: device store connected", "database", cfg.Database, "collection", collName)
