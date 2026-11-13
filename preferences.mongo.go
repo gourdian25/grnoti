@@ -85,6 +85,17 @@ type MongoPreferencesStoreConfig struct {
 	// Logger receives optional diagnostic messages. A nil Logger disables
 	// logging.
 	Logger Logger
+	// SkipIndexCreation, when set, makes the constructor create no index
+	// and instead check (listIndexes) that every index the store relies on
+	// exists, failing with ErrMongoIndexMissing when one doesn't: for a
+	// deployment whose migrations own the collection and whose application
+	// user has no createIndex. That user then needs listIndexes on it.
+	SkipIndexCreation bool
+}
+
+// preferencesIndexes are the preferences store's: one document per user.
+var preferencesIndexes = []mongoIndex{
+	{keys: bson.D{{Key: "user_id", Value: 1}}, unique: true},
 }
 
 type mongoPreferencesStore struct {
@@ -130,11 +141,9 @@ func NewMongoPreferencesStore(cfg MongoPreferencesStoreConfig) (PreferencesStore
 	}
 
 	collection := client.Database(cfg.Database).Collection(collName)
-	if _, err := collection.Indexes().CreateOne(connectCtx, mongo.IndexModel{
-		Keys: bson.D{{Key: "user_id", Value: 1}}, Options: options.Index().SetUnique(true),
-	}); err != nil {
+	if err := ensureMongoIndexes(connectCtx, collection, preferencesIndexes, cfg.SkipIndexCreation); err != nil {
 		_ = client.Disconnect(context.Background())
-		return nil, fmt.Errorf("grnoti/mongo: ensure indexes: %w", err)
+		return nil, err
 	}
 
 	logger.Info("grnoti/mongo: preferences store connected", "database", cfg.Database, "collection", collName)

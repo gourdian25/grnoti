@@ -53,6 +53,10 @@ it names):
   retryable events; MongoDB's per-document claim loop can return a
   **non-nil slice alongside a non-nil error** and callers must still
   process it (§3.6, doc comment in `interfaces.go`).
+- The Kafka consumer never marks a message it didn't handle or
+  dead-letter (§3.14): retried, then written to `<topic>.dlq` through the
+  caller's required `DLQProducer`, then marked; a failed dead-letter write
+  stops the partition. Never reintroduce a mark-and-skip path.
 - A backend-native error must never leak through a grnoti interface
   unwrapped — translate to a sentinel in `errors.go` first (see
   Conventions below).
@@ -144,7 +148,8 @@ unexported `applyPostgresSchema`, guarded by a Postgres advisory lock so
 concurrent test setup doesn't race on the DDL — so `go test`/`make test`
 work against a freshly created `grnoti_test` database with no manual
 migration step. Mongo indexes are still ensured on connect by each Mongo
-store's own constructor — that part is unaffected.
+store's own constructor, unless its config sets `SkipIndexCreation`, which
+checks them instead (docs/architecture.md §3.15).
 
 Connection details the tests expect (see `const test*` in each `*_test.go`
 file if these ever drift):

@@ -62,6 +62,20 @@ func TestNewKafkaAnalyticsPublisher_EmptyBrokers(t *testing.T) {
 	}
 }
 
+// The default analytics producer is idempotent (v0.6.0), and sarama accepts
+// it as such.
+func TestDefaultAnalyticsSaramaConfig_IsIdempotent(t *testing.T) {
+	c := defaultAnalyticsSaramaConfig()
+	if !c.Producer.Idempotent || c.Producer.RequiredAcks != sarama.WaitForAll || c.Net.MaxOpenRequests != 1 ||
+		c.Producer.Retry.Max < 1 || !c.Producer.Return.Successes {
+		t.Fatalf("default config: idempotent %v, acks %v, in flight %d, retries %d, successes %v",
+			c.Producer.Idempotent, c.Producer.RequiredAcks, c.Net.MaxOpenRequests, c.Producer.Retry.Max, c.Producer.Return.Successes)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("sarama refuses the default config: %v", err)
+	}
+}
+
 func TestNewKafkaAnalyticsPublisher_UnreachableBroker(t *testing.T) {
 	_, err := NewKafkaAnalyticsPublisher(KafkaAnalyticsPublisherConfig{Brokers: []string{"127.0.0.1:1"}})
 	if err == nil {
@@ -249,6 +263,7 @@ func TestKafkaEventProducer_PublishRoundTripsThroughConsumer(t *testing.T) {
 
 	consumer, err := NewKafkaEventConsumer(KafkaConsumerConfig{
 		Brokers: testKafkaBrokers, GroupID: "grnoti-test-group-" + topic, Topics: []string{topic},
+		DLQProducer: rawSaramaProducer(t),
 	})
 	if err != nil {
 		t.Skipf("Kafka not available, skipping: %v", err)
@@ -449,6 +464,7 @@ func TestKafkaEventConsumer_PublishAndConsume(t *testing.T) {
 
 	consumer, err := NewKafkaEventConsumer(KafkaConsumerConfig{
 		Brokers: testKafkaBrokers, GroupID: "grnoti-test-group-" + topic, Topics: []string{topic},
+		DLQProducer: rawSaramaProducer(t),
 	})
 	if err != nil {
 		t.Skipf("Kafka not available, skipping: %v", err)
@@ -510,6 +526,7 @@ func TestKafkaEventConsumer_WaitReady_ContextCanceled(t *testing.T) {
 	topic := testKafkaTopic(t)
 	consumer, err := NewKafkaEventConsumer(KafkaConsumerConfig{
 		Brokers: testKafkaBrokers, GroupID: "grnoti-test-group-" + topic, Topics: []string{topic},
+		DLQProducer: rawSaramaProducer(t),
 	})
 	if err != nil {
 		t.Skipf("Kafka not available, skipping: %v", err)
@@ -529,6 +546,7 @@ func TestKafkaEventConsumer_PoisonMessageDoesNotBlockPartition(t *testing.T) {
 
 	consumer, err := NewKafkaEventConsumer(KafkaConsumerConfig{
 		Brokers: testKafkaBrokers, GroupID: "grnoti-test-group-" + topic, Topics: []string{topic},
+		DLQProducer: rawSaramaProducer(t),
 	})
 	if err != nil {
 		t.Skipf("Kafka not available, skipping: %v", err)
@@ -589,7 +607,10 @@ func TestKafkaEventConsumer_HandlerErrorRedeliversAfterRestart(t *testing.T) {
 	}
 
 	// First consumer: handler always fails, so the message is never marked.
-	consumer1, err := NewKafkaEventConsumer(KafkaConsumerConfig{Brokers: testKafkaBrokers, GroupID: groupID, Topics: []string{topic}})
+	// A long backoff: the first consumer is stopped mid-retry, long before
+	// the message could be dead-lettered.
+	consumer1, err := NewKafkaEventConsumer(KafkaConsumerConfig{Brokers: testKafkaBrokers, GroupID: groupID, Topics: []string{topic},
+		DLQProducer: producer, Retry: ConsumerRetryPolicy{Attempts: 5, Backoff: time.Minute, MaxBackoff: time.Minute, HaltPause: time.Second}})
 	if err != nil {
 		t.Skipf("Kafka not available, skipping: %v", err)
 	}
@@ -610,7 +631,7 @@ func TestKafkaEventConsumer_HandlerErrorRedeliversAfterRestart(t *testing.T) {
 
 	// Second consumer, same group: must still see evt-retry since it was
 	// never committed.
-	consumer2, err := NewKafkaEventConsumer(KafkaConsumerConfig{Brokers: testKafkaBrokers, GroupID: groupID, Topics: []string{topic}})
+	consumer2, err := NewKafkaEventConsumer(KafkaConsumerConfig{Brokers: testKafkaBrokers, GroupID: groupID, Topics: []string{topic}, DLQProducer: producer})
 	if err != nil {
 		t.Fatalf("NewKafkaEventConsumer (second): %v", err)
 	}
@@ -650,6 +671,7 @@ func TestKafkaEventConsumer_WiresToWorkerPool(t *testing.T) {
 
 	consumer, err := NewKafkaEventConsumer(KafkaConsumerConfig{
 		Brokers: testKafkaBrokers, GroupID: "grnoti-test-group-" + topic, Topics: []string{topic},
+		DLQProducer: rawSaramaProducer(t),
 	})
 	if err != nil {
 		t.Skipf("Kafka not available, skipping: %v", err)
@@ -713,6 +735,7 @@ func TestKafkaEventConsumer_WiresToNotificationService(t *testing.T) {
 
 	consumer, err := NewKafkaEventConsumer(KafkaConsumerConfig{
 		Brokers: testKafkaBrokers, GroupID: "grnoti-test-group-" + topic, Topics: []string{topic},
+		DLQProducer: rawSaramaProducer(t),
 	})
 	if err != nil {
 		t.Skipf("Kafka not available, skipping: %v", err)

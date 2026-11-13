@@ -54,6 +54,20 @@ type MongoDLQHandlerConfig struct {
 	RetryDelay     time.Duration // passed through as-is; 0 means immediately retry-eligible
 	MaxRetryDelay  time.Duration // passed through as-is to FullJitterBackoff (0 there means its own internal default ceiling)
 	Logger         Logger
+	// SkipIndexCreation, when set, makes the constructor create no index
+	// and instead check (listIndexes) that every index the store relies on
+	// exists, failing with ErrMongoIndexMissing when one doesn't: for a
+	// deployment whose migrations own the collection and whose application
+	// user has no createIndex. That user then needs listIndexes on it.
+	SkipIndexCreation bool
+}
+
+// dlqIndexes are the DLQ handler's: one record per event, the retry claim's
+// scan, and a TTL of seven days on created_at.
+var dlqIndexes = []mongoIndex{
+	{keys: bson.D{{Key: "event_id", Value: 1}}, unique: true},
+	{keys: bson.D{{Key: "status", Value: 1}, {Key: "next_retry_at", Value: 1}}},
+	{keys: bson.D{{Key: "created_at", Value: 1}}, ttlSecond: 7 * 24 * 60 * 60},
 }
 
 type mongoDLQHandler struct {
@@ -120,13 +134,9 @@ func NewMongoDLQHandler(cfg MongoDLQHandlerConfig) (DLQHandler, error) {
 	}
 
 	collection := client.Database(cfg.Database).Collection(collName)
-	if _, err := collection.Indexes().CreateMany(connectCtx, []mongo.IndexModel{
-		{Keys: bson.D{{Key: "event_id", Value: 1}}, Options: options.Index().SetUnique(true)},
-		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "next_retry_at", Value: 1}}},
-		{Keys: bson.D{{Key: "created_at", Value: 1}}, Options: options.Index().SetExpireAfterSeconds(7 * 24 * 60 * 60)},
-	}); err != nil {
+	if err := ensureMongoIndexes(connectCtx, collection, dlqIndexes, cfg.SkipIndexCreation); err != nil {
 		_ = client.Disconnect(context.Background())
-		return nil, fmt.Errorf("grnoti/mongo: ensure indexes: %w", err)
+		return nil, err
 	}
 
 	logger.Info("grnoti/mongo: dlq handler connected", "database", cfg.Database, "collection", collName)

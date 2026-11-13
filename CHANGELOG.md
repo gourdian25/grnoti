@@ -2,6 +2,31 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.6.0] - 2026-11-13
+
+**Breaking:** `NewKafkaEventConsumer` now requires `KafkaConsumerConfig.DLQProducer`.
+
+### Fixed
+
+- **The Kafka consumer no longer loses messages** (DS-09 of grsentry's 2026-11-11 review). v0.5.x marked a
+  message that wouldn't decode and skipped one whose handler failed, and the next message's mark committed past
+  both. Now each message is handled, retried with backoff (`KafkaConsumerConfig.Retry`,
+  `DefaultConsumerRetryPolicy`), then written to `KafkaDLQTopic(topic)` (`<topic>.dlq`) with `grnoti-*` headers,
+  and only then marked. A message that won't decode goes to the dead-letter topic untried. A dead-letter write that
+  fails stops the partition and starts again from the committed offset after `HaltPause`. A handler answering
+  `ErrClosed` leaves its message unmarked and ends `Start` with that error. A handler's panic is a failure.
+- **The analytics publisher's default producer is idempotent** (`Producer.Idempotent`, one request in flight,
+  `RequiredAcks` `WaitForAll`); v0.5.x acked `WaitForLocal`. A caller-supplied `SaramaConfig` is unchanged.
+
+### Added
+
+- `KafkaConsumerConfig.DLQProducer` (required; the caller's, never closed) and `.Retry`; `ConsumerRetryPolicy`,
+  `DefaultConsumerRetryPolicy`, `KafkaDLQTopic`, `KafkaDLQSuffix` and the `KafkaHeader*` names.
+- `SkipIndexCreation` on `MongoDeviceStoreConfig`, `MongoPreferencesStoreConfig` and `MongoDLQHandlerConfig`: the
+  constructor creates no index and checks through `listIndexes` that each one it relies on exists (same keys in
+  order, uniqueness and TTL, any name), failing with the new `ErrMongoIndexMissing` otherwise. For a deployment
+  whose migrations own the collections.
+
 ## [0.5.1] - 2026-11-08
 
 ### Changed

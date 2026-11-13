@@ -274,6 +274,15 @@ err = events.Publish(ctx, grnoti.Event{
   invalid event sends **none** of them.
 - **Same wire format as the consumer.** Events are JSON (`encoding/json`),
   keyed by `EventID`.
+- **The consumer dead-letters, never drops** (v0.6.0). `NewKafkaEventConsumer`
+  requires a `DLQProducer` (a `SyncProducer` you own, idempotent): a message
+  that won't decode, or whose handler still fails after `Retry`'s attempts,
+  goes to `<topic>.dlq` with why in `grnoti-*` headers, and only then is
+  marked. Create each `.dlq` topic beside its topic. See
+  docs/architecture.md §3.14.
+- **Migrations own your Mongo collections?** Set `SkipIndexCreation` on the
+  Mongo stores' configs: they check their indexes instead of creating them
+  (§3.15).
 - **A batch can still land partly** if the broker fails mid-send. Kafka has
   no cross-message atomicity without transactions. Re-publishing the whole
   batch is safe, since the consuming service dedupes by `EventID` through
