@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.6.1] - 2026-11-18
+
+### Fixed
+
+- **A preferences save no longer leaves an old cache entry behind** (grcache v0.6.1 to v0.7.0). On a Redis or
+  PostgreSQL `grcache.Cache`, `InvalidateTag` read the tag's members and deleted them in a second step, so a
+  `GetPreferences` that filled the cache between the two kept the preferences from before the save, untagged,
+  until its TTL ran out. grcache v0.7.0 makes `InvalidateTag` atomic on both and expires Redis tag sets; grnoti's
+  code is unchanged.
+
 ## [0.6.0] - 2026-11-13
 
 **Breaking:** `NewKafkaEventConsumer` now requires `KafkaConsumerConfig.DLQProducer`.
